@@ -1,0 +1,116 @@
+#ifndef __PROPOSE__NEW__OBJECT__IMPL__HPP__INCLUDED__
+#define __PROPOSE__NEW__OBJECT__IMPL__HPP__INCLUDED__
+
+#include "misc_utils.hpp"
+
+template <typename Float>
+void propose_new_objects(parameter_t const& P,  directory_structure_t const& ds,
+			 geometric_info_t const& gi, object_info_t const& oi,
+			 vector<std::vector<std::string> > const &seq, int tt,
+			 vector<CImg<unsigned char> > const& images,
+			 vector<matrix<float> > const& grd,
+			 vector<matrix<float> >& detected_rects)
+{
+
+    int Ncam = seq.size();
+    vector<object_trj_t> const & trlet_list=oi.trlet_list;
+    int nobj = trlet_list.size();
+
+    vector<matrix<float> > ped_boxes(Ncam);
+
+    for(int cam=0; cam<Ncam; ++cam)
+    {
+	fs::path seq_path(seq[cam][tt]);
+	std::string image_name = fs::basename(seq_path);
+
+	//fs::path ped_path = fs::path(ds.workspace)/"detection"/(image_name+"_3d_ped.txt");
+	fs::path ped_path = fs::path(ds.workspace)/"detection_refine"/(image_name+"_3d_ped.txt");
+
+	read_text_matrix(ped_path.string(), ped_boxes(cam));
+    }
+
+    int ndect = ped_boxes(0).size1();
+
+    vector<int> tracked_flag(scalar_vector<int>(ndect, 0));
+
+    //std::cout<<"ped_boxes="<<std::endl;
+    //array3d_print(std::cout, ped_boxes);
+
+    for(int oo=0; oo<ndect; ++oo)
+    {
+	for(int cam=0; cam<Ncam; ++cam)
+	{
+	    //workaround for detection defects
+	    float h = ped_boxes(cam)(oo, 3)-ped_boxes(cam)(oo, 1);
+	    ped_boxes(cam)(oo, 1) += h/10;
+
+	    vector<float> r1(project(row(ped_boxes(cam), oo), range(0, 4))); 
+	    //r1(2) -= r1(0); r1(3) -= r1(1);
+
+	    float ar = (r1(2)-r1(0))*(r1(3)-r1(1));
+	    for(int nn=0; nn<nobj; ++nn)
+	    {
+		if(trlet_list(nn).trj.size()==0) continue;
+		if(tt<trlet_list(nn).startt || tt>trlet_list(nn).endt) continue;
+
+		vector<float> r2(row(trlet_list(nn).trj(cam), tt));
+		//r2(2) -= r2(0); r2(3) -= r2(1);
+		//std::cout<<"r1="<<r1<<std::endl;
+		//std::cout<<"r2="<<r2<<std::endl;
+
+		float inar = rectint(r1, r2);
+                   //(std::min(r1(2), r2(2))-std::max(r1(0), r2(0)))
+		   // *(std::min(r1(3), r2(3))-std::max(r1(1), r2(1)));
+
+		if(inar > 0.2*ar)
+		{
+		    tracked_flag(oo) = 1;
+		    //std::cout<<"en~~~, great!!"<<std::endl;
+		    break;
+		}
+
+	    }
+	    if(tracked_flag(oo)) break;
+	}
+    }
+
+    int num_new_obj = ndect - sum(tracked_flag);
+
+    std::cout<<"detected: "<<ndect<<", new: "<<num_new_obj<<std::endl;
+
+    detected_rects = vector<matrix<float> >(Ncam);
+    for(int cam=0; cam<Ncam; ++cam)
+    {
+	detected_rects(cam) = matrix<float>(num_new_obj, 4);
+	int nn=0;
+	for(int ii=0; ii<tracked_flag.size(); ++ii)
+	{
+	    if(tracked_flag(ii)) continue;
+	    row(detected_rects(cam), nn) = project(row(ped_boxes(cam), ii), range(0, 4));
+	    nn++;
+	}
+    }
+
+}
+
+#ifdef USE_MPI
+template <typename Float>
+void propose_new_objects(mpi::communicator& world,
+			 parameter_t const& P,  directory_structure_t const& ds,
+			 geometric_info_t const& gi, object_info_t const& oi,
+			 vector<std::vector<std::string> > const &seq, int tt,
+			 vector<CImg<unsigned char> > const& images,
+			 vector<matrix<float> > const& grd,
+			 vector<matrix<float> >& detected_rects)
+{
+
+    if(world.rank()==0)
+    {
+	propose_new_objects<Float>(P, ds, gi, oi, seq, tt, images, grd, detected_rects);
+    }
+    mpi::broadcast(world, detected_rects, 0);
+}
+
+#endif
+
+#endif

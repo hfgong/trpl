@@ -1,0 +1,4 @@
+project (kvector)
+
+add_executable( graph_test graph_test.cpp)
+

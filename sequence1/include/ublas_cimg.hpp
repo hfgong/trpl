@@ -1,0 +1,217 @@
+#ifndef _UBLAS_CIMG_HPP_INCLUDED
+#define _UBLAS_CIMG_HPP_INCLUDED
+
+#include <boost/numeric/ublas/matrix.hpp>
+#include <boost/numeric/ublas/matrix_proxy.hpp>
+#include <boost/numeric/ublas/matrix_sparse.hpp>
+
+#include <boost/numeric/ublas/io.hpp>
+
+#include <boost/lambda/lambda.hpp>
+#include <boost/lambda/casts.hpp>
+
+#include <limits>
+
+#include "CImg.h"
+
+#include "cvpr_stub.hpp"
+
+BEGIN_NAMESPACE_CVPR
+
+
+template <class T, class T2>
+boost::numeric::ublas::matrix<T> ublas_matrix(cimg_library::CImg<T2>& img)
+{
+    boost::numeric::ublas::matrix<T> mat(img.height(), img.width()*img.spectrum());
+    /* assert img.depth()==1 */
+    for(int yy=0; yy<img.height(); ++yy)
+    {
+	int jj=0;
+	for(int xx=0; xx<img.width(); ++xx)
+	{
+	    for(int cc=0; cc<img.spectrum(); ++cc)
+	    {
+		mat(yy, jj) = T(*(img.data(xx, yy, 0, cc)));
+		++jj;
+	    }
+	}
+    }
+    return mat;
+}
+
+template <class T, class T2>
+cimg_library::CImg<T> cimg(boost::numeric::ublas::matrix<T2>& mat)
+{
+    cimg_library::CImg<T> img(mat.size2(), mat.size1());
+    /* assert img.depth()==1 */
+    for(int yy=0; yy<img.height(); ++yy)
+    {
+	for(int xx=0; xx<img.width(); ++xx)
+	{
+	    *(img.data(xx, yy, 0, 0)) = static_cast<T>(mat(yy, xx));
+	}
+    }
+    return img;
+}
+
+template <class T, class T2>
+cimg_library::CImg<T> cimg(boost::numeric::ublas::matrix<T2>& mat, int nc)
+{
+    int h = mat.size1();
+    int w = mat.size2()/nc;
+    cimg_library::CImg<T> img(w, h, 1, nc);
+    /* assert img.depth()==1 */
+    for(int yy=0; yy<img.height(); ++yy)
+    {
+	for(int xx=0; xx<img.width(); ++xx)
+	{
+	    for(int cc=0; cc<nc; ++cc)
+	    *(img.data(xx, yy, 0, cc)) = static_cast<T>(mat(yy, xx*nc+cc));
+	}
+    }
+    return img;
+}
+
+template <class Mat>
+void show_image(const std::string& window_name, const Mat& smap, int nc=1)
+{
+    typedef typename Mat::value_type Float;
+    using namespace boost::lambda;
+    using namespace cimg_library;
+    using namespace boost::numeric::ublas;
+    Float minv = *(std::min_element(smap.data().begin(), smap.data().end()));
+    Float maxv = *(std::max_element(smap.data().begin(), smap.data().end()));
+
+    matrix<unsigned char> disp(smap.size1(), smap.size2());
+
+    Float dw = (maxv-minv);
+    if(std::numeric_limits<Float>::is_integer)
+    {
+	if(dw==0) dw = 1;
+    }
+    else
+    {
+	if(dw<std::numeric_limits<Float>::epsilon())
+	    dw = std::numeric_limits<Float>::epsilon();
+    }
+
+
+    std::transform(smap.data().begin(), smap.data().end(), disp.data().begin(),
+		   ll_static_cast<unsigned char>( (_1-minv)*255.0f/dw ));
+
+
+    CImg<unsigned char> image = cimg<unsigned char>(disp, nc);
+
+    CImgDisplay main_disp(image, "smap");
+
+    while (!main_disp.is_closed())
+    {
+	main_disp.wait();
+	if (main_disp.button() && main_disp.mouse_y()>=0) {
+	    const int y = main_disp.mouse_y();
+	    const int x = main_disp.mouse_x();
+	    //std::cout<<smap(y, x)<<std::endl;
+
+        }
+    }
+}
+
+template <typename T>
+void show_image(const std::string& window_name, cimg_library::CImg<T> const& image)
+{
+    cimg_library::CImgDisplay main_disp(image, "smap");
+
+    while (!main_disp.is_closed())
+    {
+	main_disp.wait();
+	if (main_disp.button() && main_disp.mouse_y()>=0) {
+	    const int y = main_disp.mouse_y();
+	    const int x = main_disp.mouse_x();
+	    //std::cout<<smap(y, x)<<std::endl;
+
+        }
+    }
+}
+
+
+
+//template <class Mat>
+struct tile_panel_t
+{
+    tile_panel_t(int nrow, int ncol, int hei, int wid, int nc=1)
+	:nrow_(nrow), ncol_(ncol), wid_(wid), hei_(hei), nc_(nc) {
+	mat_ = boost::numeric::ublas::scalar_matrix<unsigned char>(nrow_*hei_, ncol_*wid_*nc_, 0);
+    }
+    template <class Mat>
+    void add_image(int row, int col, const Mat& mat)	{
+	using namespace boost::lambda;
+	using namespace boost::numeric::ublas;
+	matrix<unsigned char> a= scalar_matrix<unsigned char>(hei_, wid_*nc_, 0);
+	std::transform(mat.data().begin(), mat.data().end(), a.data().begin(),
+		       ll_static_cast<unsigned char>(_1));
+	range ry(row*hei_, (row+1)*hei_);
+	range rxc(col*wid_*nc_, (col+1)*wid_*nc_);
+	project(mat_, ry, rxc) = a;
+    }
+    template <class Mat>
+    void add_image_gray(int row, int col, const Mat& mat)	{
+	typedef typename Mat::value_type Float;
+	using namespace boost::lambda;
+	using namespace boost::numeric::ublas;
+	Float minv = *(std::min_element(mat.data().begin(), mat.data().end()));
+	Float maxv = *(std::max_element(mat.data().begin(), mat.data().end()));
+
+	matrix<unsigned char> disp(hei_, wid_);
+	Float dw = maxv-minv;
+	if(std::numeric_limits<Float>::is_integer)
+	{
+	    if(dw==0) dw = 1;
+	}
+	else
+	{
+	    if(dw<std::numeric_limits<Float>::epsilon())
+		dw = std::numeric_limits<Float>::epsilon();
+	}
+
+	std::transform(mat.data().begin(), mat.data().end(), disp.data().begin(),
+		  ll_static_cast<unsigned char>( (_1-minv)*255/dw   ));
+
+	slice sy(row*hei_, 1, hei_);
+	for(int cc=0; cc<nc_; ++cc)
+	{
+	    slice sxc(col*wid_*nc_+cc, nc_, wid_);
+	    project(mat_, sy, sxc) = disp;
+	}
+
+    }
+
+    void show(const std::string& title) {
+	using namespace cimg_library;
+	CImg<unsigned char> image = cimg<unsigned char>(mat_);
+
+	CImgDisplay main_disp(image, title.c_str());
+
+	while (!main_disp.is_closed())
+	{
+	    main_disp.wait();
+	    if (main_disp.button() && main_disp.mouse_y()>=0) {
+		const int y = main_disp.mouse_y();
+		const int x = main_disp.mouse_x();
+		//std::cout<<mat_(y, x)<<std::endl;
+	    }
+	}
+	
+    }
+private:
+    boost::numeric::ublas::matrix<unsigned char> mat_;
+    int nrow_;
+    int ncol_;
+    int wid_;
+    int hei_;
+    int nc_;
+};
+
+
+END_NAMESPACE_CVPR
+
+#endif

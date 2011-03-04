@@ -1,0 +1,15 @@
+project (lmdp) 
+
+add_executable (lmdp_learn lmdp_learn_main.cpp)
+
+target_link_libraries (lmdp_learn ${BOOSTLIBS}  X11 pthread ${UMFLIBS})
+
+
+add_executable (lmdp_learn_eth lmdp_learn_eth_main.cpp)
+
+target_link_libraries (lmdp_learn_eth ${BOOSTLIBS}  X11 pthread ${UMFLIBS})
+
+
+add_executable (lmdp_unit_test lmdp_unit_test_main.cpp)
+
+target_link_libraries (lmdp_unit_test ${BOOSTLIBS}  X11 pthread ${UMFLIBS})

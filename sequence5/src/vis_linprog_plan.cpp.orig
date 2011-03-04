@@ -1,0 +1,674 @@
+#include <boost/mpi.hpp>
+#include "tracking_data_package.hpp"
+#include "tracking_detail.hpp"
+#include "planning.hpp"
+
+struct data_package_t
+{
+    vector<object_trj_t> good_trlet_list;
+    vector<object_trj_t> final_trj_list;
+    matrix<int> final_state_list;
+    vector<vector<int> > final_trj_index;
+    matrix<float> Aff;
+    matrix<vector<object_trj_t> > gap_trlet_list;
+    matrix<float> Plff;
+    matrix<int> Tff;
+    matrix<int> links;
+    matrix<int> gap_rind;
+
+    vector<object_trj_t> merged_trj_list;
+    vector<vector<int> > merged_trj_index;
+    matrix<int> merged_state_list;
+
+    vector<int> plan_time;
+    vector<vector<planning_result_item_t> > plan_results;
+
+    matrix<vector<matrix<int> > > reduced_paths;
+
+
+    void load( directory_structure_t const& ds)	{
+	{
+	    std::string name = ds.workspace+"good_trlet_list.xml";
+	    std::ifstream fin(name.c_str());
+	    boost::archive::xml_iarchive ia(fin);
+	    ia >> BOOST_SERIALIZATION_NVP(good_trlet_list);
+	}
+
+	{
+	    std::string name = ds.workspace+"final_trj_list_plan.xml";
+	    std::ifstream fs(name.c_str());
+	    boost::archive::xml_iarchive ia(fs);
+	    ia >> BOOST_SERIALIZATION_NVP(final_trj_list);
+	}
+	{
+	    std::string name = ds.workspace+"final_state_list_plan.txt";
+	    std::ifstream fs(name.c_str());
+	    fs>>final_state_list;
+	    fs.close();
+	}
+	{
+	    std::string name = ds.workspace+"final_trj_index_plan.txt";
+	    std::ifstream fs(name.c_str());
+	    fs >> final_trj_index;
+	    fs.close();
+	}
+
+	{
+	    std::string name = ds.workspace+"Aff_plan.txt";
+	    std::ifstream fs(name.c_str());
+	    fs>>Aff;
+	    fs.close();
+	}
+
+	{
+	    std::string name = ds.workspace+"gap_trlet_list_plan.xml";
+	    std::ifstream fs(name.c_str());
+	    boost::archive::xml_iarchive ar(fs);
+	    ar >> BOOST_SERIALIZATION_NVP(gap_trlet_list);
+	}
+
+	{
+	    std::string name = ds.workspace+"Plff.txt";
+	    std::ifstream fs(name.c_str());
+	    fs >> Plff;
+	    fs.close();
+	}
+	{
+	    std::string name = ds.workspace+"gap_rind.txt";
+	    std::ifstream fs(name.c_str());
+	    fs>>gap_rind;
+	    fs.close();
+	}
+
+	{
+	    std::string name = ds.workspace+"Tff.txt";
+	    std::ifstream fs(name.c_str());
+	    fs >> Tff;
+	    fs.close();
+	}
+	{
+	    std::string name = ds.workspace+"links_plan.txt";
+	    std::ifstream fs(name.c_str());
+	    fs >> links;
+	    fs.close();
+	}
+
+	{
+	    std::string name = ds.workspace+"merged_trj_list_plan.xml";
+	    std::ifstream fin(name.c_str());
+	    boost::archive::xml_iarchive ia(fin);
+	    ia >> BOOST_SERIALIZATION_NVP(merged_trj_list);
+	}
+
+	{
+	    std::string name = ds.workspace+"merged_trj_index_plan.txt";
+	    std::ifstream fin(name.c_str());
+	    fin>>merged_trj_index;
+	    fin.close();
+	}
+
+	{
+	    std::string name = ds.workspace+"merged_state_list_plan.txt";
+	    std::ifstream fin(name.c_str());
+	    fin >> merged_state_list;
+	    fin.close();
+	}
+
+	{
+	    std::string name = ds.workspace+"plan_time.xml";
+	    std::ifstream fin(name.c_str());
+	    boost::archive::xml_iarchive ia(fin);
+	    ia >> BOOST_SERIALIZATION_NVP(plan_time);
+	}
+    
+	{
+	    std::string name = ds.workspace+"plan_results.xml";
+	    std::ifstream fin(name.c_str());
+	    boost::archive::xml_iarchive ia(fin);
+	    ia >> BOOST_SERIALIZATION_NVP(plan_results);
+	}
+
+
+	{
+	    std::string name = ds.workspace+"reduced_paths.txt";
+	    std::ifstream fin(name.c_str());
+	    fin>>reduced_paths;
+	    fin.close();
+	}
+
+    }
+
+};
+
+
+void vis_final_trj_patches(
+    directory_structure_t const& ds,
+    std::string const& fig_path,
+    vector<std::vector<std::string> > const& seq,
+    int T,
+    int Ncam,
+    vector<object_trj_t>const & good_trlet_list,
+    vector<object_trj_t>const & final_trj_list,
+    matrix<int>const & final_state_list,
+    vector<vector<int> >const & final_trj_index)
+{
+    using namespace boost::lambda;
+    int num_obj = final_trj_list.size();
+    vector<matrix<CImg<unsigned char> > > patches(
+	scalar_vector<matrix<CImg<unsigned char> > >(
+	    num_obj, matrix<CImg<unsigned char> >(Ncam, T) ) );
+
+    unsigned char ccol[3]={255, 255, 0};
+    unsigned char fcol[3]={255, 255, 255};
+    unsigned char bcol[3]={0, 0, 0};
+    for(int tt=0; tt<T; tt++)
+    {
+	vector<CImg<unsigned char> > images(Ncam);
+
+	for(int cam=0; cam<Ncam; ++cam)
+	{
+	    images[cam] = CImg<unsigned char>(seq[cam][tt].c_str());
+
+	    for(int nn=0; nn<num_obj; ++nn)
+	    {
+		if(tt<final_trj_list(nn).startt) continue;
+		if(tt>final_trj_list(nn).endt) continue;
+		vector<float> b = row(final_trj_list(nn).trj(cam), tt);
+		boost::array<int, 4> box;
+		std::transform(b.begin(), b.end(), box.begin(),
+			       ll_static_cast<int>(_1+0.5f));
+
+		patches(nn)(cam,tt) = images[cam].get_crop(
+		    box[0], box[1], box[2], box[3]);
+	    }	  
+	}
+    }
+
+    typedef array3d_traits<CImg<unsigned char> > A;
+    int ww = 100;
+    int hh = 250;
+
+    CImg<unsigned char> tile;
+    A::change_size(tile, 3, hh*Ncam*num_obj, ww*T);
+    array3d_fill(tile, 255);
+    for(int nn=0; nn<num_obj; ++nn)
+    {
+	for(int cam=0; cam<Ncam; ++cam)
+	{
+	    for(int tt=0; tt<T; ++tt)
+	    {
+		if(A::size1(patches(nn)(cam, tt)) ==0) continue;
+		patches(nn)(cam, tt).resize(ww, hh);
+		if(final_state_list(nn, tt)==0)
+		{
+		    patches(nn)(cam, tt).draw_line(1, 1, ww-1, hh-1, ccol, 2);
+		    patches(nn)(cam, tt).draw_line(ww-1, 1, 1, hh-1, ccol, 2);
+		}
+		std::string numstr(lexical_cast<std::string>(tt));
+		patches(nn)(cam, tt).draw_text (1, 1, numstr.c_str(), fcol, bcol, 1, 40);
+		for(int ii=0; ii<final_trj_index(nn).size(); ++ii)
+		{
+		    int nn0 = final_trj_index(nn)(ii);
+		    if(tt==good_trlet_list(nn0).startt)
+		    {
+			std::string nstr(lexical_cast<std::string>(nn0));
+			patches(nn)(cam, tt).draw_text (1, hh/2, nstr.c_str(),
+							fcol, bcol, 1, 100);
+		    }
+		}
+		add_patch_to_tile(tile, patches(nn)(cam, tt), cam+nn*Ncam, tt);
+	    }
+	}
+
+    }
+
+    {
+	tile.save_jpeg(fig_path.c_str(), 90);
+    }
+
+
+}
+
+
+void vis_affinity_matrices(
+    directory_structure_t const& ds,
+    vector<std::vector<std::string> > const& seq,
+    int T,    int Ncam,
+    vector<object_trj_t> const& good_trlet_list,
+    matrix<int> const& Tff,
+    matrix<float> const& Aff,
+    matrix<float> const& Plff,
+    matrix<vector<object_trj_t> > const& gap_trlet_list,
+    matrix<int> const& gap_rind,
+    matrix<int> const& links)
+{
+    using namespace boost::lambda;
+    int num_obj = good_trlet_list.size();
+    vector<matrix<CImg<unsigned char> > > patches(num_obj);
+
+    unsigned char ccol[3]={255, 255, 0};
+    unsigned char fcol[3]={255, 255, 255};
+    unsigned char bcol[3]={0, 0, 0};
+
+    typedef array3d_traits<CImg<unsigned char> > A;
+    int ww = 100;
+    int hh = 250;
+
+    for(int nn=0; nn<num_obj; ++nn)
+    {
+	int dt = good_trlet_list(nn).endt-good_trlet_list(nn).startt+1;
+
+	patches(nn) = matrix<CImg<unsigned char> >(Ncam, dt);
+						   
+    }
+    for(int tt=0; tt<T; tt++)
+    {
+	vector<CImg<unsigned char> > images(Ncam);
+
+	for(int cam=0; cam<Ncam; ++cam)
+	{
+	    images[cam] = CImg<unsigned char>(seq[cam][tt].c_str());
+
+	    for(int nn=0; nn<num_obj; ++nn)
+	    {
+		if(tt<good_trlet_list(nn).startt) continue;
+		if(tt>good_trlet_list(nn).endt) continue;
+		vector<float> b = row(good_trlet_list(nn).trj(cam), tt);
+		boost::array<int, 4> box;
+		std::transform(b.begin(), b.end(), box.begin(),
+			       ll_static_cast<int>(_1+0.5f));
+
+		int t0 = good_trlet_list(nn).startt;
+		patches(nn)(cam, tt-t0) = images[cam].get_crop(
+		    box[0], box[1], box[2], box[3]);
+		patches(nn)(cam, tt-t0).resize(ww, hh);
+		std::string numstr(lexical_cast<std::string>(nn));
+		patches(nn)(cam, tt-t0).draw_text (1, 1,
+						   numstr.c_str(),
+						   fcol, bcol, 1, 40);
+		patches(nn)(cam, tt-t0).draw_line(1, 1, 1, hh-1, bcol, 1);
+		patches(nn)(cam, tt-t0).draw_line(1, hh-1, ww-1, hh-1, bcol, 1);
+		patches(nn)(cam, tt-t0).draw_line(ww-1, hh-1, ww-1, 1, bcol, 1);
+		patches(nn)(cam, tt-t0).draw_line(ww-1, 1, 1, 1, bcol, 1);
+
+		std::string tstr(lexical_cast<std::string>(tt));
+		patches(nn)(cam, tt-t0).draw_text (1, hh-60,
+						   tstr.c_str(),
+						   fcol, bcol, 1, 40);
+	    }	  
+	}
+    }
+
+    matrix<matrix<CImg<unsigned char> > > gap_patches(num_obj, num_obj);
+
+    for(int nn=0; nn<num_obj; ++nn)
+    {
+	for(int mm=0; mm<num_obj; ++mm)
+	{
+	    int rr = gap_rind(nn, mm);
+	    if(rr<0) continue;
+	    int dt = gap_trlet_list(nn, mm)(rr).endt
+		- gap_trlet_list(nn, mm)(rr).startt+1;
+	    gap_patches(nn, mm) = matrix<CImg<unsigned char> >(Ncam, dt);
+	}
+    }
+
+    for(int tt=0; tt<T; tt++)
+    {
+	vector<CImg<unsigned char> > images(Ncam);
+
+	for(int cam=0; cam<Ncam; ++cam)
+	{
+	    images[cam] = CImg<unsigned char>(seq[cam][tt].c_str());
+
+	    for(int nn=0; nn<num_obj; ++nn)
+	    {
+		for(int mm=0; mm<num_obj; ++mm)
+		{
+		    int rr = gap_rind(nn, mm);
+		    if(rr<0) continue;
+		    if(tt<gap_trlet_list(nn, mm)(rr).startt) continue;
+		    if(tt>gap_trlet_list(nn, mm)(rr).endt) continue;
+		    vector<float> b = row(gap_trlet_list(nn, mm)(rr).trj(cam), tt);
+		    boost::array<int, 4> box;
+		    std::transform(b.begin(), b.end(), box.begin(),
+				   ll_static_cast<int>(_1+0.5f));
+
+		    int t0 = gap_trlet_list(nn, mm)(rr).startt;
+		    gap_patches(nn, mm)(cam, tt-t0) = images[cam].get_crop(
+			box[0], box[1], box[2], box[3]);
+		    gap_patches(nn, mm)(cam, tt-t0).resize(ww, hh);
+
+		}
+	    }	  
+	}
+    }
+
+
+    CImg<unsigned char> tile;
+    A::change_size(tile, 3, hh*(1+num_obj), ww*Ncam*(1+num_obj));
+    array3d_fill(tile, 255);
+
+    CImg<unsigned char> blank;
+    A::change_size(blank, 3, hh, ww);
+    array3d_fill(blank, 200);
+
+    for(int nn=0; nn<num_obj; ++nn)
+    {
+	//int sumt = sum(row(Tff, nn));
+	for(int cam=0; cam<Ncam; ++cam)
+	{
+	    int tt = patches(nn).size2()/Ncam*cam;
+	    add_patch_to_tile(tile, patches(nn)(cam, tt), 0, (nn+1)*Ncam+cam);
+	    add_patch_to_tile(tile, patches(nn)(cam, tt), nn+1, cam);
+	}
+	{
+	    int y0 = 0;
+	    int x0 = (nn+1)*Ncam*ww;
+	    int y1 = hh;
+	    int x1 = (nn+2)*Ncam*ww;
+	    tile.draw_line(x0, y0, x0, y1, bcol, 1);
+	    tile.draw_line(x0, y1, x1, y1, bcol, 1);
+	    tile.draw_line(x1, y1, x0, y1, bcol, 1);
+	    tile.draw_line(x0, y1, x0, y0, bcol, 1);
+	}
+
+    }
+
+    unsigned char green[3] = {0, 255, 0};
+    unsigned char red[3] = {255, 0, 0};
+    unsigned char yellow[3] = {255, 255, 0};
+    unsigned char cyan[3] = {0, 255, 255};
+
+    matrix<float> Sff = (Aff+Plff*0.5)/1.5;
+
+    vector<int> row_max=scalar_vector<int>(num_obj, -1);
+    vector<int> col_max=scalar_vector<int>(num_obj, -1);
+    for(int nn=0; nn<num_obj; ++nn)
+    {
+	if(sum(row(Tff, nn))==0) continue;
+	matrix_row<matrix<float> > rff(Sff, nn);
+	row_max(nn) = std::max_element(rff.begin(), rff.end())-rff.begin();
+    }
+
+    for(int nn=0; nn<num_obj; ++nn)
+    {
+	if(sum(column(Tff, nn))==0) continue;
+	matrix_column<matrix<float> > cff(Sff, nn);
+	col_max(nn) = std::max_element(cff.begin(), cff.end())-cff.begin();
+    }
+
+    for(int nn=0; nn<num_obj; ++nn)
+    {
+	for(int mm=0; mm<num_obj; ++mm)
+	{
+	    int rr = gap_rind(nn, mm);
+	    if(rr<0) continue;
+	    object_trj_t const& gap_trlet = gap_trlet_list(nn, mm)(rr);
+
+	    for(int cam=0; cam<Ncam; ++cam)
+	    {
+		CImg<unsigned char> gim;
+		if(gap_patches(nn, mm).size2()) 
+		{
+		    int tt = gap_patches(nn, mm).size2()/2;
+		    gim = gap_patches(nn, mm)(cam, tt);
+		}
+		else 
+		{
+		    gim = blank;
+		}
+		//gim.draw_text();
+		add_patch_to_tile(tile, gim,  nn+1, (mm+1)*Ncam+cam);
+	    }
+	    std::string sstr=str(format("a=%.2f")%Aff(nn, mm));
+	    std::string pstr=str(format("p=%.2f")%Plff(nn, mm));
+
+	    if(mm==row_max(nn))
+	    {
+		tile.draw_circle((mm+1)*Ncam*ww+ww/2, (nn+2)*hh-25, 20, yellow);
+	    }
+	    if(nn==col_max(mm))
+	    {
+		tile.draw_circle((mm+1)*Ncam*ww+(Ncam-1)*ww+ww/2, (nn+2)*hh-25, 20, cyan);
+	    }
+
+	    tile.draw_text((mm+1)*Ncam*ww+2, (nn+1)*hh, sstr.c_str(),
+			   fcol, bcol, 1, 40);
+	    tile.draw_text((mm+1)*Ncam*ww+2, (nn+1)*hh+hh/4, pstr.c_str(),
+			   fcol, bcol, 1, 40);
+
+	    {
+		int dAff = static_cast<int>(Aff(nn, mm)/10.0f*ww);
+		if(dAff<-ww) dAff = -ww;
+		if(dAff>ww) dAff = ww;
+		unsigned char * acol = green;
+		if(dAff<0) acol = red;
+		tile.draw_rectangle((mm+1)*Ncam*ww+ww, (nn+1)*hh+hh/2+5,
+				    (mm+1)*Ncam*ww+ww+dAff, (nn+1)*hh+hh/2+10,
+				    acol);
+	    }
+
+	    {
+		int dPff = static_cast<int>(Plff(nn, mm)/10.0f*ww);
+		if(dPff<-ww) dPff = -ww;
+		if(dPff> ww) dPff = ww;
+		unsigned char * pcol = green;
+		if(dPff<0) pcol = red;
+		tile.draw_rectangle((mm+1)*Ncam*ww+ww, (nn+1)*hh+hh/2+15,
+				    (mm+1)*Ncam*ww+ww+dPff, (nn+1)*hh+hh/2+20,
+				    pcol);
+	    }
+	    {
+		int dPff = static_cast<int>(Sff(nn, mm)/10.0f*ww);
+		if(dPff<-ww) dPff = -ww;
+		if(dPff> ww) dPff = ww;
+		unsigned char * pcol = green;
+		if(dPff<0) pcol = red;
+		tile.draw_rectangle((mm+1)*Ncam*ww+ww, (nn+1)*hh+hh/2+25,
+				    (mm+1)*Ncam*ww+ww+dPff, (nn+1)*hh+hh/2+35,
+				    pcol);
+	    }
+	}
+    }
+
+    {
+	std::string fig_path=ds.figures+"affinity_matrix_plan.jpg";
+	tile.save_jpeg(fig_path.c_str(), 90);
+    }
+
+#if 0
+		if(A::size1(patches(nn)(cam, tt)) ==0) continue;
+		patches(nn)(cam, tt).resize(ww, hh);
+		if(final_state_list(nn, tt)==0)
+#endif
+
+
+}
+
+void vis_sequences(directory_structure_t const& ds,
+		   vector<std::vector<std::string> > const& seq,
+		   vector<matrix<double> > const& grd2img,
+		   vector<object_trj_t> const& good_trlet_list,
+		   matrix<vector<object_trj_t> > const& gap_trlet_list,
+		   matrix<int> const& gap_rind,
+		   vector<int> const& plan_time,
+		   matrix<vector<matrix<int> > > const& reduced_paths,
+		   vector<object_trj_t> const& trj_list,
+		   matrix<int> const& state_list,
+		   vector<vector<int> > const& trj_index)
+{
+    using namespace boost::lambda;
+    int T = seq[0].size();
+    int Ncam = 2;
+    unsigned char ccol[3]={255, 255, 0};
+
+    unsigned char fcol[3]={255, 255, 255};
+    unsigned char bcol[3]={0, 0, 0};
+
+    unsigned char green[3] = {0, 255, 0};
+
+    typedef array3d_traits<CImg<unsigned char> > A;
+
+    for(int nn=0; nn<trj_list.size(); ++nn)
+    {
+	object_trj_t const& trj = trj_list(nn);
+	for(int tt=trj.startt; tt<=trj.endt; ++tt)
+	{
+	    //vector<CImg<unsigned char> > images(Ncam);
+	    bool ingap = false;
+	    int na = 0;
+	    int nb = 0;
+	    int rind = 0;
+	    for(int ii=0; ii+1<trj_index(nn).size(); ++ii)
+	    {
+		int aa = trj_index(nn)(ii);
+		int bb = trj_index(nn)(ii+1);
+		if(gap_trlet_list(aa, bb).size()==0) continue;
+		if(tt>=gap_trlet_list(aa, bb)(0).startt &&
+		   tt<=gap_trlet_list(aa, bb)(0).endt)
+		{
+		    ingap = true;
+		    na = aa;
+		    nb = bb;
+		    rind = gap_rind(aa, bb);
+		    break;
+		}
+	    }
+
+	    for(int cam=0; cam<Ncam; ++cam)
+	    {
+		CImg<unsigned char> vis = CImg<unsigned char>(seq[cam][tt].c_str());
+		vector<float> b = row(trj.trj(cam), tt);
+		boost::array<int, 4> box;
+		std::transform(b.begin(), b.end(), box.begin(),
+			       ll_static_cast<int>(_1+0.5f));
+		for(int cc=0; cc<A::size1(vis); ++cc)
+		{
+		    for(int yy=0; yy<A::size2(vis); ++yy)
+		    {
+			for(int xx=0; xx<A::size3(vis); ++xx)
+			{
+			    if(xx<box[0] || xx> box[2] ||
+			       yy<box[1] || yy> box[3])
+			    A::ref(vis, cc, yy, xx) /=2;
+			}
+		    }
+		}
+
+		for(int dx=-1; dx<=1; ++dx)
+		{
+		    for(int dy=-1; dy<=1; ++dy)
+		    {
+			vis.draw_line(box[0]+dx, box[1]+dy, 0,
+				      box[0]+dx, box[3]+dy, 0, ccol, 1);
+			vis.draw_line(box[2]+dx, box[1]+dy, 0,
+				      box[2]+dx, box[3]+dy, 0, ccol, 1);
+			vis.draw_line(box[0]+dx, box[1]+dy, 0,
+				      box[2]+dx, box[1]+dy, 0, ccol, 1);
+			vis.draw_line(box[0]+dx, box[3]+dy, 0,
+				      box[2]+dx, box[3]+dy, 0, ccol, 1);
+		    }
+		}
+
+		if(ingap)
+		{
+		    for(int pp=0; pp<reduced_paths(na, nb).size(); ++pp)
+		    {
+			matrix<int> const& path = reduced_paths(na, nb)(pp);
+
+			matrix_column<matrix<int> const> ipx(path, 0);
+			matrix_column<matrix<int> const> ipy(path, 1);
+
+			vector<double> gx, gy;
+			array1d_transform(ipx, gx, ll_static_cast<float>(_1));
+			array1d_transform(ipy, gy, ll_static_cast<float>(_1));
+			vector<double> imx, imy;
+			apply_homography(grd2img(cam), gx, gy, imx, imy);
+
+			vector<int> imxi, imyi;
+			array1d_transform(imx, imxi, ll_static_cast<int>(_1+0.5l));
+			array1d_transform(imy, imyi, ll_static_cast<int>(_1+0.5l));
+			for(int dd=0; dd+1< path.size1(); ++dd)
+			{
+			    for(int dx=-1; dx<=1; ++dx)
+			    {
+				for(int dy=-1; dy<=1; ++dy)
+				{
+				    vis.draw_line(imxi(dd)+dx, imyi(dd)+dy, 0,
+						  imxi(dd+1)+dx, imyi(dd+1)+dy, 0,
+						  green, 1);
+				}
+			    }
+			}
+			
+		    }
+		}
+
+		std::string name = ds.output+str(format("trj_plan_%03d_%1d_%03d.jpg")
+		    %nn%cam%tt);
+		vis.save_jpeg(name.c_str(), 90);
+	    }
+	}
+    }
+}
+
+int main(int argc, char* argv[])
+{
+    directory_structure_t ds;
+
+    vector<std::vector<std::string> > seq(2);
+    read_sequence_list(ds.prefix, seq);
+    int T = seq[0].size();
+    int Ncam = 2;
+
+    data_package_t data;
+    data.load(ds);
+
+    array<std::size_t, 2> img_size = {768, 1024};
+    geometric_info_t gi;
+    gi.load(ds, img_size);
+
+
+    vector<object_trj_t>& good_trlet_list = data.good_trlet_list;
+    vector<object_trj_t>& final_trj_list = data.final_trj_list;
+    matrix<int>& final_state_list = data.final_state_list;
+    vector<vector<int> >& final_trj_index = data.final_trj_index;
+    matrix<float>& Aff = data.Aff;
+    matrix<vector<object_trj_t> >& gap_trlet_list = data.gap_trlet_list;
+    matrix<float>& Plff = data.Plff;
+    matrix<int>& gap_rind = data.gap_rind;
+    matrix<int>& links = data.links;
+    matrix<int>& Tff = data.Tff;
+
+    vector<object_trj_t>& merged_trj_list = data.merged_trj_list;
+    matrix<int>& merged_state_list = data.merged_state_list;
+    vector<vector<int> >& merged_trj_index = data.merged_trj_index;
+
+
+    vector<int> const& plan_time = data.plan_time;
+    vector<vector<planning_result_item_t> > const& plan_results = data.plan_results;
+
+    matrix<vector<matrix<int> > > const& reduced_paths = data.reduced_paths;
+
+
+    vis_final_trj_patches(ds, ds.figures+"lp_patches_plan.jpg", seq, T, Ncam,
+			  good_trlet_list,
+			  final_trj_list, final_state_list, final_trj_index);
+
+    vis_final_trj_patches(ds, ds.figures+"lp_merged_patches_plan.jpg", seq, T, Ncam,
+			  good_trlet_list,
+			  merged_trj_list, merged_state_list, merged_trj_index);
+
+    vis_affinity_matrices(ds, seq, T,  Ncam, good_trlet_list, Tff,
+			  Aff, Plff, gap_trlet_list, gap_rind, links);
+
+//    vector<matrix<double> > goals_im;
+
+#if 1
+    vis_sequences(ds, seq, gi.grd2img, good_trlet_list, gap_trlet_list, gap_rind,
+		  plan_time, reduced_paths,
+		  merged_trj_list, merged_state_list, merged_trj_index);
+#endif
+    return 0;
+}

@@ -1,0 +1,1001 @@
+#ifndef __LINPROG__PLAN__IMPL__HPP__INCLUDED__
+#define __LINPROG__PLAN__IMPL__HPP__INCLUDED__
+
+template <class Vec>
+int nearest_point(matrix<float> const& path, Vec const& pos)
+{
+    vector<float> dist(path.size1());
+    for(int ii=0; ii<path.size1(); ++ii)
+    {
+	float dx = path(ii, 0)-pos(0);
+	float dy = path(ii, 1)-pos(1);
+	dist(ii) = dx*dx+dy*dy;
+    }
+    return std::min_element(dist.begin(), dist.end())-dist.begin();
+}
+
+#include <boost/math/special_functions/hypot.hpp>
+
+void chord_length(matrix<float>const& path, vector<float>& clen)
+{
+    vector<float> len = vector<float>(path.size1());
+    len(0) = 0;
+    for(int ii=1; ii<path.size1(); ++ii)
+    {
+	float dx = path(ii, 0)-path(ii-1, 0);
+	float dy = path(ii, 1)-path(ii-1, 1);
+	len(ii) = hypot(dx, dy);
+    }
+
+    cumsum(len, clen);
+}
+
+float trj2path_distance(matrix<float> const& trj, matrix<float> const& path)
+{
+    using namespace boost::lambda;
+    int p0 = nearest_point(path, row(trj, 0));
+    matrix<float> pv = project(path, range(p0, path.size1()), range::all());
+    vector<float> len_path;
+    chord_length(pv, len_path);
+    vector<float> len_trj;
+    chord_length(trj, len_trj);
+
+    float (*fabs)(float) = std::abs;
+
+    vector<int> p(trj.size1());
+    p(0) = p0;
+    for(int ii=1; ii<trj.size1(); ++ii)
+    {
+	vector<float> dl;
+	array1d_transform(len_path, dl, _1-len_trj(ii));
+	std::for_each(dl.begin(), dl.end(), _1 = bind(fabs, _1));
+	int kk = std::min_element(dl.begin(), dl.end())-dl.begin();
+	p(ii) = kk;
+    }
+
+    matrix<float> trj2(p.size(), 2);
+    for(int ii=0; ii<p.size(); ++ii)
+    {
+	row(trj2, ii) = row(path, p(ii));
+    }
+
+    matrix<float> dtrj = trj2-trj;
+
+    return std::accumulate(dtrj.data().begin(), dtrj.data().end(), 0.0f,
+			   _1+_2*_2);
+}
+
+void guided_gap_interp(vector<float> const& pos1,
+		       vector<float> const& pos2,
+		       matrix<float> const& path,
+		       int dt,
+		       matrix<float> & gap)
+{
+    using namespace boost::lambda;
+    int p1 = nearest_point(path, pos1);
+    int p2 = nearest_point(path, pos2);
+
+    vector<float> len_path;
+    chord_length(path, len_path);
+
+    float l1 = len_path(p1);
+    float l2 = len_path(p2);
+
+    //std::cout<<"len_path="<<len_path<<std::endl;
+
+    vector<int> p(dt+2);
+    p(0) = p1; p(p.size()-1) = p2;
+    for(int ii=1; ii<p.size()-1; ++ii)
+    {
+	float ll = (l1*(p.size()-1-ii)+l2*ii)/(p.size()-1);
+	vector<float> dl;
+	array1d_transform(len_path, dl, _1-ll);
+	std::for_each(dl.begin(), dl.end(), _1 = bind(fabs, _1));
+	int kk = std::min_element(dl.begin(), dl.end())-dl.begin();
+	p(ii) = kk;
+    }
+    //std::cout<<"p="<<p<<std::endl;
+    matrix<float> Q(p.size(), 2);
+    for(int ii=0; ii<Q.size1(); ++ii)
+    {
+	row(Q, ii) = row(path, p(ii));
+    }
+
+    matrix<float> S(dt, dt);
+    for(int ii=0; ii<dt; ++ii)
+    {
+	for(int jj=0; jj<dt; ++jj)
+	{
+	    switch(ii-jj)
+	    {
+	    case 0: S(ii, jj) = 2.0f; break;
+	    case 1:
+	    case -1: S(ii, jj) = -1.0f; break;
+	    default: S(ii, jj) = 0;
+	    }
+	}
+    }
+
+    matrix<float> b = 2.0f*project(Q, range(1, Q.size1()-1), range::all())
+	-project(Q, range(0, Q.size1()-2), range::all())
+	-project(Q, range(2, Q.size1()), range::all());
+
+
+    if(b.size1())
+    {
+	row(b, 0) += pos1;
+	row(b, b.size1()-1) += pos2;
+    }
+
+    permutation_matrix<std::size_t> perm(dt);
+    lu_factorize(S, perm);
+    lu_substitute(S, perm, b);
+
+    gap = b;
+#if 0
+    gap = matrix<float>(b.size1()+2, 2);
+
+    row(gap, 0) = pos1;
+    row(gap, gap.size1()-1) = pos2;
+    project(gap, range(1, gap.size1()-1), range::all()) = b;
+
+    //std::cout<<"pos1="<<pos1<<std::endl;
+    //std::cout<<"pos2="<<pos2<<std::endl;
+    //array2d_print(std::cout<<"gap=", gap);
+    //std::cout<<"pos1="<<pos1<<std::endl;
+#endif
+
+}
+
+
+void trj2plan_distance(vector<planning_result_item_t> const& results,
+		       object_trj_t const& trlet,
+		       matrix<matrix<double> > const& grd2img,
+		       int tt1, int tt2,
+		       vector<vector<float> >& dist1)
+{
+    using namespace boost::lambda;
+    int Ncam = grd2img.size2();
+    dist1 = vector<vector<float> >(results.size());
+    //vector<vector<float> > rob_dist1(results.size());
+    for(int kk=0; kk<results.size(); ++kk)
+    {
+	dist1(kk) = scalar_vector<float>(results(kk).path.size(), 0.0f);
+	//rob_dist1(kk) = scalar_vector<float>(results(kk).path.size(), 0.0f);
+    }
+
+    for(int cam=0; cam<Ncam; ++cam)
+    {
+	matrix_range<matrix<float> const> tr(trlet.trj(cam), range(tt1, tt2+1),
+					     range::all());
+	matrix<float> trf(tr.size1(), 2);
+	column(trf, 0) = (column(tr, 0)+column(tr, 2))/2.0f;
+	column(trf, 1) = column(tr, 3);
+	for(int kk=0; kk<results.size(); ++kk)
+	{
+	    for(int pp=0; pp<results(kk).path.size(); ++pp)
+	    {
+		vector<double> prev_x, prev_y;
+		matrix_column<matrix<int> const> ipx(results(kk).path(pp), 0);
+		matrix_column<matrix<int> const> ipy(results(kk).path(pp), 1);
+		array1d_transform(ipx, prev_x, ll_static_cast<double>(_1));
+		array1d_transform(ipy, prev_y, ll_static_cast<double>(_1));
+		vector<double> imx(prev_x.size()), imy(prev_x.size());
+		apply_homography(grd2img((tt1+tt2)/2, cam), prev_x, prev_y, imx, imy);
+		matrix<float> path(imx.size(), 2);
+		column(path, 0) = imx;
+		column(path, 1) = imy;
+		float dc = trj2path_distance(trf, path);
+		dist1(kk)(pp) += dc;
+	    }
+	}
+    }
+
+}
+
+
+void vis_plan_gap_trlets(geometric_info_t const& gi,
+			 vector<object_trj_t> const& trlet_list,
+			 matrix<float> const& Tff,
+			 matrix<vector<matrix<int> > > const& reduced_paths,
+			 matrix<vector<object_trj_t> > const& gap_trlet_list,
+			 matrix<vector<float> > const& dist_mat,
+			 matrix<vector<float> > const& cost_mat,
+			 directory_structure_t &ds)
+{
+    using namespace boost::lambda;
+    int ng = Tff.size1();
+    for(int ii=0; ii<ng; ++ii)
+    {
+	int nn1 = ii; //good_trlet_index(ii);
+	for(int jj=0; jj<ng; ++jj)
+	{
+	    int nn2 = jj; //good_trlet_index(jj);
+	    if(!Tff(ii, jj)) continue;
+	    int nr = reduced_paths(nn1, nn2).size();
+
+	    CImg<unsigned char> gim; //(gi.ground_lim.xmax, gi.ground_lim.ymax, 3);
+	    array3d_traits<CImg<unsigned char> >::change_size(gim,  3,
+							      gi.ground_lim.ymax,
+							      gi.ground_lim.xmax);
+
+	    array3d_fill(gim, 0);
+	    matrix<int> ipoly;
+	    matrix<int> igoal;
+
+	    array2d_transform(gi.poly_ground, ipoly, ll_static_cast<int>(_1+0.5l));
+	    array2d_transform(gi.goal_ground, igoal, ll_static_cast<int>(_1+0.5l));
+
+	    unsigned char lcol[3] = {255, 0, 0};
+	    for(int pp=0; pp+1<ipoly.size2(); ++pp)
+	    {
+		gim.draw_line(ipoly(0, pp), ipoly(1, pp),
+			      ipoly(0, pp+1), ipoly(1, pp+1),
+			      lcol, 3);
+	    }
+
+
+	    unsigned char col1[3] = {255, 0, 0};
+	    unsigned char col2[3] = {255, 128, 128};
+	    for(int tt=trlet_list(nn1).startt; tt<trlet_list(nn1).endt; ++tt)
+	    {
+		gim.draw_line(as_int(trlet_list(nn1).trj_3d(tt, 0)),
+			      as_int(trlet_list(nn1).trj_3d(tt, 1)),
+			      as_int(trlet_list(nn1).trj_3d(tt+1, 0)),
+			      as_int(trlet_list(nn1).trj_3d(tt+1, 1)),
+			      col1, 3);
+	    }
+	    for(int tt=trlet_list(nn2).startt; tt<trlet_list(nn2).endt; ++tt)
+	    {
+		gim.draw_line(as_int(trlet_list(nn2).trj_3d(tt, 0)),
+			      as_int(trlet_list(nn2).trj_3d(tt, 1)),
+			      as_int(trlet_list(nn2).trj_3d(tt+1, 0)),
+			      as_int(trlet_list(nn2).trj_3d(tt+1, 1)),
+			      col2, 3);
+	    }
+	    unsigned char colg[3] = {0, 255, 0};
+	    unsigned char colp[3] = {128, 255, 128};
+	    for(int rr=0; rr<nr; ++rr)
+	    {
+		//int rr = gap_rind(nn1, nn2);
+		object_trj_t gap_trlet = gap_trlet_list(nn1, nn2)(rr);
+		CImg<unsigned char> gim2=gim;
+		for(int tt=gap_trlet.startt; tt<gap_trlet.endt; ++tt)
+		{
+		    gim2.draw_line(as_int(gap_trlet.trj_3d(tt, 0)),
+				  as_int(gap_trlet.trj_3d(tt, 1)),
+				  as_int(gap_trlet.trj_3d(tt+1, 0)),
+				  as_int(gap_trlet.trj_3d(tt+1, 1)),
+				  colg, 3);
+		}
+		if(reduced_paths(nn1, nn2).size())
+		{
+		    matrix<int> const& gap_path = reduced_paths(nn1, nn2)(rr);
+		    for(int tt=0; tt+1<gap_path.size1(); ++tt)
+		    {
+			gim2.draw_line(gap_path(tt, 0),
+				      gap_path(tt, 1),
+				      gap_path(tt+1, 0),
+				      gap_path(tt+1, 1),
+				      colp, 3);
+		    }
+		}
+		gim2.mirror('y');
+		std::string dist_str = str(format("%5f")%dist_mat(nn1, nn2)(rr));
+		std::string cost_str = str(format("%5f")%cost_mat(nn1, nn2)(rr));
+		unsigned char tfcol[3] = {255, 255, 0};
+		unsigned char tbcol[3] = {128, 128, 128};
+		gim2.draw_text(40, 20, dist_str.c_str(), tfcol, tbcol, 1, 20);
+		gim2.draw_text(40, 80, cost_str.c_str(), tfcol, tbcol, 1, 20);
+		{
+		    std::string name =
+			ds.figures+str(format("gap_%03d_%03d_%03d.png")%nn1%nn2%rr);
+		    gim2.save_png(name.c_str());
+		}
+
+	    }
+
+	    //for(int rr=0; rr<
+	}
+    }
+
+
+}
+
+
+void compute_plan_gap_scores(vector<std::vector<std::string> > const& seq,
+			   geometric_info_t const& gi,
+			   parameter_t const& P, 
+			   vector<object_trj_t> const& trlet_list,
+			   vector<array<float, 4> > const& model,
+			   matrix<float> const& Tff,
+			   matrix<vector<object_trj_t> >& gap_trlet_list )
+{
+    int Ncam = gi.img2grd.size2();
+    //int ng = good_trlet_index.size();
+    int num_obj = trlet_list.size();
+    int ng = num_obj;
+
+    int T = seq[0].size();
+
+    vector<float> dx(3), dy(3);
+    dx <<= -4,  0,  4;
+    dy <<= -4,  0,  4;
+
+    for(int tt=0; tt<T; ++tt)
+    {
+	std::vector<int> iis, jjs;
+	for(int ii=0; ii<ng; ++ii)
+	{
+	    for(int jj=0; jj<ng; ++jj)
+	    {
+		if(gap_trlet_list(ii, jj).size()==0) continue;
+		int t1 = gap_trlet_list(ii, jj)(0).startt;
+		int t2 = gap_trlet_list(ii, jj)(0).endt;
+		if(t1<=tt&&t2>=tt)
+		{
+		    iis.push_back(ii);
+		    jjs.push_back(jj);
+		}
+	    }
+	}
+	if(iis.size()<=0) continue;
+
+	//std::cout<<"tt="<<tt<<std::endl;
+	vector<CImg<unsigned char> > images(Ncam);
+	vector<matrix<float> > grd(Ncam);
+
+	for(int cam=0; cam<Ncam; ++cam)
+	{
+	    images[cam] = CImg<unsigned char>(seq[cam][tt].c_str());
+	}
+
+	for(int kk=0; kk<iis.size(); ++kk)
+	{
+	    int ii = iis[kk];
+	    int jj = jjs[kk];
+	    int nn1 = ii; //good_trlet_index(ii);
+	    int nn2 = jj; //good_trlet_index(jj);
+	    int nr = gap_trlet_list(ii, jj).size();
+	    for(int rr = 0; rr< nr; ++rr)
+	    {
+		object_trj_t& gap_trlet=gap_trlet_list(ii, jj)(rr);
+
+		for(int cam=0; cam<Ncam; ++cam)
+		{
+		    vector<float> bodyr(row(gap_trlet.trj(cam), tt));
+		    matrix<float> cand_rects;
+		    enumerate_rects_refine(bodyr, dx, dy, cand_rects);
+		    vector<float> cand_score_sum(
+			scalar_vector<float>(cand_rects.size1(), 0));
+
+		    array<int, 2> nns={nn1, nn2};
+		    for(int ll=0; ll<nns.size(); ++ll)
+		    {
+			int nn = nns[ll];
+			matrix<float> hist_fscores;
+			vector<float> cand_hist_score;
+			get_cand_hist_score(images(cam), model, P.logp1, P.logp2,
+					    trlet_list(nn).hist_p(cam),
+					    trlet_list(nn).hist_q(cam),
+					    cand_rects,
+					    cand_hist_score, hist_fscores);
+			for(int bb=0; bb<cand_hist_score.size(); ++bb)
+			{
+			    if(isnan(cand_hist_score(bb)))
+				cand_hist_score(bb) = -10;
+			}
+			cand_score_sum += cand_hist_score;
+		    }
+		    int idx_max = std::max_element(cand_score_sum.begin(),
+						   cand_score_sum.end())
+			-cand_score_sum.begin();
+		    gap_trlet.scores(cam, tt) = cand_score_sum(idx_max)/2;
+		    if(isnan(gap_trlet.scores(cam, tt))) 
+			std::cout<<"nan ******=============="<<std::endl;
+		    row(gap_trlet.trj(cam), tt) = row(cand_rects, idx_max);
+		}
+	    }
+	}
+    }
+
+}
+
+
+void compute_plan_gap_trlet(geometric_info_t const& gi,
+			    int T, int Ncam,
+			    vector<object_trj_t> const& trlet_list,
+			    matrix<float> const& Tff,
+			    matrix<vector<matrix<int> > > const& reduced_paths,
+			    matrix<vector<object_trj_t> >& gap_trlet_list )
+{
+    int ng = Tff.size1();
+    gap_trlet_list = matrix<vector<object_trj_t> >(ng, ng);
+    for(int ii=0; ii<ng; ++ii)
+    {
+	int nn1 = ii; 
+	for(int jj=0; jj<ng; ++jj)
+	{
+	    int nn2 = jj; 
+	    if(!Tff(ii, jj)) continue;
+	    int nr = reduced_paths(nn1, nn2).size();
+	    int t1 = trlet_list(nn1).endt;
+	    int t2 = trlet_list(nn2).startt;
+	    gap_trlet_list(ii, jj) = vector<object_trj_t>(nr);
+	    for(int rr=0; rr< std::max(nr, 1); ++rr)
+	    {
+		object_trj_t& gap_trlet = gap_trlet_list(ii, jj)(rr);
+		gap_trlet.startt = t1+1;
+		gap_trlet.endt = t2-1;
+
+		gap_trlet.trj = scalar_vector<matrix<float> >(
+		    Ncam, scalar_matrix<float>(T, 4, 0) );
+		gap_trlet.scores = scalar_matrix<float>(Ncam, T, 0.0f);
+		gap_trlet.trj_3d = scalar_matrix<float>(T, 2, 0);
+
+	    }
+	    matrix<float> ww(2, Ncam), hh(2, Ncam);
+	    for(int cam=0; cam<Ncam; ++cam)
+	    {
+		ww(0, cam) = trlet_list(nn1).trj(cam)(t1, 2)-trlet_list(nn1).trj(cam)(t1, 0);
+		ww(1, cam) = trlet_list(nn2).trj(cam)(t2, 2)-trlet_list(nn2).trj(cam)(t2, 0);
+		hh(0, cam) = trlet_list(nn1).trj(cam)(t1, 3)-trlet_list(nn1).trj(cam)(t1, 1);
+		hh(1, cam) = trlet_list(nn2).trj(cam)(t2, 3)-trlet_list(nn2).trj(cam)(t2, 1);
+	    }
+
+	    
+	    vector<float> pos1(row(trlet_list(nn1).trj_3d, t1));
+	    vector<float> pos2(row(trlet_list(nn2).trj_3d, t2));
+
+	    for(int rr=0; rr<nr; ++rr)
+	    {
+		object_trj_t& gap_trlet = gap_trlet_list(ii, jj)(rr);
+		matrix<float> interpos;
+		guided_gap_interp(pos1, pos2, reduced_paths(ii, jj)(rr), t2-t1-1,
+		    interpos);
+
+		for(int tt=t1+1; tt<=t2-1; ++tt)
+		{
+		    vector<float> pos = row(interpos, tt-t1-1);
+		    row(gap_trlet.trj_3d, tt) = pos;
+		    for(int cam=0; cam<Ncam; ++cam)
+		    {
+			vector<double> gx(1), gy(1), ix, iy;
+			gx <<= pos(0);
+			gy <<= pos(1);
+			apply_homography(gi.grd2img(tt, cam), gx, gy, ix, iy);
+			float wwt = (ww(0, cam)*(t2-tt)+ww(1, cam)*(tt-t1))/(t2-t1);
+			float hht = (hh(0, cam)*(t2-tt)+hh(1, cam)*(tt-t1))/(t2-t1);
+
+			vector<float> bodyr(4);
+			bodyr <<= (ix(0)-wwt/2), (iy(0)-hht), (ix(0)+wwt/2), iy(0);
+			row(gap_trlet.trj(cam), tt) = bodyr;
+
+		    }
+		}
+	    }
+	    if(0==nr)
+	    {
+		object_trj_t& gap_trlet = gap_trlet_list(ii, jj)(0);
+		for(int tt=t1+1; tt<=t2-1; ++tt)
+		{
+		    vector<float> pos( (pos1*(t2-tt)+pos2*(tt-t1))/(t2-t1));
+		    row(gap_trlet.trj_3d, tt) = pos;
+		    for(int cam=0; cam<Ncam; ++cam)
+		    {
+			vector<double> gx(1), gy(1), ix, iy;
+			gx <<= pos(0);
+			gy <<= pos(1);
+			apply_homography(gi.grd2img(tt, cam), gx, gy, ix, iy);
+			float wwt = (ww(0, cam)*(t2-tt)+ww(1, cam)*(tt-t1))/(t2-t1);
+			float hht = (hh(0, cam)*(t2-tt)+hh(1, cam)*(tt-t1))/(t2-t1);
+
+			vector<float> bodyr(4);
+			bodyr <<= (ix(0)-wwt/2), (iy(0)-hht), (ix(0)+wwt/2), iy(0);
+			row(gap_trlet.trj(cam), tt) = bodyr;
+
+		    }
+		}
+
+	    }
+
+	}
+    }
+
+}
+
+void select_plan_gap_paths(matrix<float> const& Tff,
+			   int Ncam,
+			   matrix<vector<object_trj_t> >const& gap_trlet_list,
+			   matrix<vector<float> > const& dist_mat,
+			   matrix<vector<matrix<int> > > const& reduced_paths,
+			   matrix<float>& Plff,
+			   matrix<int>& gap_rind,
+			   matrix<matrix<int> > & gap_paths)
+{
+    int ng = gap_trlet_list.size1();
+    Plff = scalar_matrix<float>(ng, ng, 0);
+    gap_rind = scalar_matrix<int>(ng, ng, -1);
+    gap_paths = matrix<matrix<int> >(ng, ng);
+
+
+    for(int ii=0; ii<ng; ++ii)
+    {
+	int nn1 = ii; //good_trlet_index(ii);
+	for(int jj=0; jj<ng; ++jj)
+	{
+	    int nn2 = jj; //good_trlet_index(jj);
+	    if(!Tff(ii, jj)) continue;
+	    int nr = gap_trlet_list(ii, jj).size();
+	    vector<float> score=scalar_vector<float>(nr, 0.0f);
+	    for(int rr=0; rr<nr; ++rr)
+	    {
+		object_trj_t gap_trlet = gap_trlet_list(ii, jj)(rr);
+		for(int cam=0; cam<Ncam; ++cam)
+		{
+		    for(int tt=gap_trlet.startt; tt<=gap_trlet.endt; ++tt)
+		    {
+			//Plff(ii, jj) += sat2(gap_trlet.scores(cam, tt), 2.0f, 8.0f) -2;
+			score(rr) += sat2(gap_trlet.scores(cam, tt), 2.0f, 8.0f)-2;
+		    }
+		    vector<float> const& dd = dist_mat(ii, jj);
+		    score(rr) = sat(score(rr), 16.0f) - dd(rr)/800.0f+2.0f;
+
+		}
+	    }
+	    int idx = std::max_element(score.begin(), score.end())-score.begin();
+	    Plff(ii, jj) = sat(score(idx), 16.0f);
+	    gap_rind(ii, jj) = idx;
+	    if(reduced_paths(ii, jj).size())
+		gap_paths(ii, jj) = reduced_paths(ii, jj)(idx);
+	}
+    }
+
+
+
+}
+
+void match_plan_to_trlet(vector<std::vector<std::string> > const& seq,
+			 geometric_info_t const& gi,
+			 int plan_advance,
+			 vector<object_trj_t> const& trlet_list,
+			 matrix<float> const& Tff,
+			 vector<int> const& plan_time,
+			 vector<vector<planning_result_item_t> > const& plan_results,
+			 matrix<vector<float> >& cost_mat,
+			 matrix<vector<float> >& dist_mat,
+			 matrix<vector<matrix<int> > >& reduced_paths)
+{
+    using namespace boost::lambda;
+    int Ncam = gi.img2grd.size2();
+    int num_obj = trlet_list.size();
+    int ng = num_obj;
+
+    int T = seq[0].size();
+    cost_mat = matrix<vector<float> >(ng, ng);
+    dist_mat = matrix<vector<float> >(ng, ng);
+    reduced_paths = matrix<vector<matrix<int> > >(ng, ng);
+    for(int nn=0; nn<ng; ++nn)
+    {
+	if(plan_results(nn).size()==0) continue;
+	int tt1 = plan_time(nn);
+	int tt2 = trlet_list(nn).endt;
+	
+	vector<planning_result_item_t> const& results = plan_results(nn);
+	vector<vector<float> > dist1(results.size());
+	trj2plan_distance(results, trlet_list(nn), gi.grd2img, tt1,  tt2, dist1);
+	for(int mm=0; mm<ng; ++mm)
+	{
+	    if(!Tff(nn, mm)) continue;
+	    
+	    int ss1 = trlet_list(mm).startt;
+	    int ss2 = trlet_list(mm).startt+plan_advance;
+	    if(ss2 > trlet_list(mm).endt) ss2 = trlet_list(mm).endt;
+	    vector<vector<float> > dist2(results.size());
+	    real_timer_t timer;
+	    trj2plan_distance(results, trlet_list(mm), gi.grd2img, ss1,  ss2, dist2);
+	    
+    
+	    int size = std::accumulate(dist1.begin(), dist1.end(), 0,
+				       _1+bind(&vector<float>::size, _2));
+	    //std::cout<<"sum_size="<<size<<std::endl;
+	    vector<float> dv(size), cv(size);
+	    vector<int> gidx(size), pidx(size);
+	    int ll = 0;
+	    for(int ii=0; ii<dist1.size(); ++ii)
+	    {
+		project(dv, range(ll, ll+dist1(ii).size())) =
+		    (dist1(ii)+dist2(ii))/(2+tt2-tt1+ss2-ss1);
+
+		project(cv, range(ll, ll+dist1(ii).size())) =
+		    results(ii).dist;
+		project(gidx, range(ll, ll+dist1(ii).size())) =
+		    scalar_vector<int>(dist1(ii).size(), ii);
+		std::copy(counting_iterator<int>(0),
+			  counting_iterator<int>(dist1(ii).size()),
+			  pidx.begin()+ll);
+		ll += dist1(ii).size();
+	    }
+	    float md = *std::min_element(dv.begin(), dv.end());
+	    std::vector<int> idx;
+	    for(int ii=0; ii<dv.size(); ++ii)
+	    {
+		if(dv(ii)-md<800)   idx.push_back(ii);
+	    }
+	    //std::sort(dv.begin(), dv.end());
+	    //int sidx = std::min(std::size_t(3), idx.size());
+	    vector<float> dv2(idx.size());
+	    for(int kk=0; kk<idx.size(); ++kk)
+	    {
+		int ii = idx[kk];
+		dv2(kk) = dv[ii];
+	    }
+	    vector<std::pair<int, float> > tmp(idx.size());
+	    std::transform(idx.begin(), idx.end(), dv2.begin(), tmp.begin(),
+			   std::make_pair<int, float> );
+	    std::sort(tmp.begin(), tmp.end(),
+		      bind(std::less<float>(),
+			   bind(&std::pair<int, float>::second, _1),
+			   bind(&std::pair<int, float>::second, _2) ) );
+
+	    //int num = std::min(std::size_t(12), tmp.size());
+	    int num = std::min(std::size_t(8), tmp.size());
+
+	    dist_mat(nn, mm) = vector<float>(num);
+	    cost_mat(nn, mm) = vector<float>(num);
+	    reduced_paths(nn, mm) = vector<matrix<int> >(num);
+	    for(int kk=0; kk<num; ++kk)
+	    {
+		int ii = tmp(kk).first;
+		dist_mat(nn, mm)(kk) = std::sqrt(tmp(kk).second);
+		cost_mat(nn, mm)(kk) = cv(ii);
+		reduced_paths(nn, mm)(kk) = results(gidx(ii)).path(pidx(ii));
+	    }
+
+#if 0	    // reduce them!!
+	    dist_mat(nn, mm) = vector<float>(idx.size());
+	    cost_mat(nn, mm) = vector<float>(idx.size());
+	    reduced_paths(nn, mm) = vector<matrix<int> >(idx.size());
+	    for(int kk=0; kk<idx.size(); ++kk)
+	    {
+		int ii = idx[kk];
+		dist_mat(nn, mm)(kk) = std::sqrt(dv(ii));
+		cost_mat(nn, mm)(kk) = cv(ii);
+		reduced_paths(nn, mm)(kk) = results(gidx(ii)).path(pidx(ii));
+	    }
+#endif
+	    if(idx.size()==0)
+	    {
+		dist_mat(nn, mm) = scalar_vector<float>(1, 1200.0f);
+		cost_mat(nn, mm) = scalar_vector<float>(1, 800.0f);
+	    }
+	}
+    }
+
+}
+
+void prepare_plan_affinity(vector<std::vector<std::string> > const& seq,
+			   geometric_info_t const& gi,
+			   parameter_t const& P, int plan_advance,
+			   float plff_thr,
+			   vector<object_trj_t> const& trlet_list,
+			   vector<array<float, 4> > const& model,
+			   matrix<float> const& Tff,
+			   vector<int> const& plan_time,
+			   vector<vector<planning_result_item_t> > const& plan_results,
+			   matrix<float>& Plff,
+			   matrix<vector<object_trj_t> >& gap_trlet_list,
+			   matrix<int>& gap_rind,
+			   matrix<matrix<int> > & gap_paths,
+			   directory_structure_t &ds)
+{
+
+    using namespace boost::lambda;
+    int Ncam = gi.img2grd.size2();
+    int num_obj = trlet_list.size();
+    int ng = num_obj;
+
+    int T = seq[0].size();
+
+    matrix<vector<float> > cost_mat;
+    matrix<vector<float> > dist_mat;
+    matrix<vector<matrix<int> > > reduced_paths;
+    real_timer_t timer;
+    //1. matching planning to trajectories at two ends
+    std::cout<<timer.elapsed()/1000.0f<<":\t1. matching planning to trajectories at two ends"<<std::endl;
+    match_plan_to_trlet(seq, gi, plan_advance, trlet_list, Tff, plan_time, plan_results,
+			cost_mat, dist_mat, reduced_paths);
+
+
+    //2. Allocate and fill bbs
+    std::cout<<timer.elapsed()/1000.0f<<":\t2. Allocate and fill bbs"<<std::endl;
+    compute_plan_gap_trlet(gi, T, Ncam, trlet_list, Tff,
+		       reduced_paths, gap_trlet_list );
+    //
+    vis_plan_gap_trlets(gi, trlet_list, Tff, reduced_paths, gap_trlet_list,
+			dist_mat, cost_mat, ds);
+
+
+    //3. Refinement and get scores
+    std::cout<<timer.elapsed()/1000.0f<<":\t3. Refinement and get scores"<<std::endl;
+    compute_plan_gap_scores(seq, gi, P, trlet_list, model, Tff, gap_trlet_list );
+
+    //vis_plan_gap_scores
+
+    //4. Compute Plff
+    std::cout<<timer.elapsed()/1000.0f<<":\t4. Compute Plff"<<std::endl;
+    select_plan_gap_paths(Tff, Ncam, gap_trlet_list, dist_mat, reduced_paths,
+			  Plff,  gap_rind, gap_paths);
+    std::cout<<timer.elapsed()/1000.0f<<":\texit"<<std::endl;
+
+    std::for_each(Plff.data().begin(), Plff.data().end(), _1 -= plff_thr);
+
+}
+
+
+void compute_plan_gap_scores(mpi::communicator& world,
+			     vector<std::vector<std::string> > const& seq,
+			     geometric_info_t const& gi,
+			     parameter_t const& P, 
+			     vector<object_trj_t> const& trlet_list,
+			     vector<array<float, 4> > const& model,
+			     matrix<float> const& Tff,
+			     matrix<vector<object_trj_t> >& gap_trlet_list )
+{
+    int Ncam = gi.img2grd.size2();
+    //int ng = good_trlet_index.size();
+    int num_obj = trlet_list.size();
+    int ng = num_obj;
+
+    int T = seq[0].size();
+
+    vector<float> dx(3), dy(3);
+    dx <<= -4,  0,  4;
+    dy <<= -4,  0,  4;
+
+    for(int tt=0; tt<T; ++tt)
+    {
+	std::vector<int> iis, jjs;
+	for(int ii=0; ii<ng; ++ii)
+	{
+	    for(int jj=0; jj<ng; ++jj)
+	    {
+		if(gap_trlet_list(ii, jj).size()==0) continue;
+		int t1 = gap_trlet_list(ii, jj)(0).startt;
+		int t2 = gap_trlet_list(ii, jj)(0).endt;
+		if(t1<=tt&&t2>=tt)
+		{
+		    iis.push_back(ii);
+		    jjs.push_back(jj);
+		}
+	    }
+	}
+	if(iis.size()<=0) continue;
+
+	//std::cout<<"tt="<<tt<<std::endl;
+	vector<CImg<unsigned char> > images(Ncam);
+	vector<matrix<float> > grd(Ncam);
+
+	for(int cam=0; cam<Ncam; ++cam)
+	{
+	    images[cam] = CImg<unsigned char>(seq[cam][tt].c_str());
+	}
+
+	for(int kk=0; kk<iis.size(); ++kk)
+	{
+	    int ii = iis[kk];
+	    int jj = jjs[kk];
+	    int nn1 = ii; //good_trlet_index(ii);
+	    int nn2 = jj; //good_trlet_index(jj);
+	    int nr = gap_trlet_list(ii, jj).size();
+	    //for(int rr = 0; rr< nr; ++rr)
+	    for(int rr=world.rank(); rr<nr; rr+=world.size())
+	    {
+		object_trj_t& gap_trlet = gap_trlet_list(ii, jj)(rr);
+
+		for(int cam=0; cam<Ncam; ++cam)
+		{
+		    vector<float> bodyr(row(gap_trlet.trj(cam), tt));
+		    matrix<float> cand_rects;
+		    enumerate_rects_refine(bodyr, dx, dy, cand_rects);
+		    vector<float> cand_score_sum(
+			scalar_vector<float>(cand_rects.size1(), 0));
+
+		    array<int, 2> nns={nn1, nn2};
+		    for(int ll=0; ll<nns.size(); ++ll)
+		    {
+			int nn = nns[ll];
+			matrix<float> hist_fscores;
+			vector<float> cand_hist_score;
+			get_cand_hist_score(images(cam), model, P.logp1, P.logp2,
+					    trlet_list(nn).hist_p(cam),
+					    trlet_list(nn).hist_q(cam),
+					    cand_rects,
+					    cand_hist_score, hist_fscores);
+			for(int bb=0; bb<cand_hist_score.size(); ++bb)
+			{
+			    if(isnan(cand_hist_score(bb)))
+				cand_hist_score(bb) = -10;
+			}
+
+			cand_score_sum += cand_hist_score;
+		    }
+		    int idx_max = std::max_element(cand_score_sum.begin(),
+						   cand_score_sum.end())
+			-cand_score_sum.begin();
+		    gap_trlet.scores(cam, tt) = cand_score_sum(idx_max)/2;
+		    row(gap_trlet.trj(cam), tt) = row(cand_rects, idx_max);
+		}
+	    }
+	    if(0==world.rank())
+	    {
+		std::vector<vector<object_trj_t> > v1;
+		mpi::gather(world, gap_trlet_list(ii, jj), v1, 0);
+		for(int rank=0; rank<world.size(); rank++)
+		{
+		    for(int rr=rank; rr<nr; rr+=world.size())
+		    {
+			gap_trlet_list(ii, jj)(rr) = v1[rank](rr);
+		    }
+		}
+	    }
+	    else
+	    {
+		mpi::gather(world, gap_trlet_list(ii, jj),0);
+	    }
+	    mpi::broadcast(world, gap_trlet_list(ii, jj),0);
+
+	}
+    }
+
+}
+
+void vis_plan_gap_scores(vector<std::vector<std::string> > const& seq,
+			 matrix<vector<object_trj_t> > const& gap_trlet_list,
+			 directory_structure_t &ds)
+{
+    using namespace boost::lambda;
+    int Ncam = seq.size();
+    int T = seq[0].size();
+    int N = gap_trlet_list.size1();
+    matrix<CImg<unsigned char> > patches(N, N);
+
+    int ww = 100;
+    int hh = 250;
+
+    unsigned char fcol[3]={255, 255, 255};
+    unsigned char bcol[3]={0, 0, 0};
+
+    //std::cout<<
+    typedef array3d_traits<CImg<unsigned char> > A;
+    for(int mm=0; mm<N; ++mm)
+    {
+	for(int nn=0; nn<N; ++nn)
+	{
+	    if(gap_trlet_list(mm, nn).size()==0) continue;
+	    int dt = gap_trlet_list(mm, nn)(0).endt+1-gap_trlet_list(mm, nn)(0).startt;
+	    A::change_size(patches(mm, nn), 3, hh*Ncam, ww*dt);
+	     
+	}
+    }
+
+    for(int tt=0; tt<T; tt++)
+    {
+	vector<CImg<unsigned char> > images(Ncam);
+
+	for(int cam=0; cam<Ncam; ++cam)
+	{
+	    images[cam] = CImg<unsigned char>(seq[cam][tt].c_str());
+	    for(int mm=0; mm<N; ++mm)
+	    {
+		for(int nn=0; nn<N; ++nn)
+		{
+		    if(gap_trlet_list(mm, nn).size()==0) continue;
+		    for(int rr=0; rr<gap_trlet_list(mm, nn).size(); ++rr)
+		    {
+			object_trj_t const& gap_trlet = gap_trlet_list(mm, nn)(rr);
+			if(tt<gap_trlet.startt || tt>gap_trlet.endt) continue;
+			matrix_row<matrix<float>const > b(gap_trlet.trj(cam), tt);
+			boost::array<int, 4> box;
+			std::transform(b.begin(), b.end(), box.begin(),
+				       ll_static_cast<int>(_1+0.5f));
+			CImg<unsigned char> tmp(images[cam].get_crop(
+						    box[0], box[1], box[2], box[3]));
+			tmp.resize(ww, hh);
+			std::string numstr=str(format("%2f")%gap_trlet.scores(cam, tt));
+			tmp.draw_text (1, 1, numstr.c_str(), fcol, bcol, 1, 20);
+			add_patch_to_tile(patches(mm, nn), tmp, cam, tt-gap_trlet.startt);
+		    }
+		}
+	    }
+
+	}
+    }
+
+    for(int mm=0; mm<N; ++mm)
+    {
+	for(int nn=0; nn<N; ++nn)
+	{
+	    if(gap_trlet_list(mm, nn).size()==0) continue;
+	    int dt = gap_trlet_list(mm, nn)(0).endt+1-gap_trlet_list(mm, nn)(0).startt;
+	    if(0==dt) continue;
+	    std::string name =ds.figures+ str(format("gap_patch_%03d_%03d.jpg")%mm%nn);
+	    patches(mm, nn).save_jpeg(name.c_str(), 70);
+	}
+    }
+}
+
+
+void prepare_plan_affinity(mpi::communicator& world,
+			   vector<std::vector<std::string> > const& seq,
+			   geometric_info_t const& gi,
+			   parameter_t const& P, int plan_advance,
+			   float plff_thr,
+			   vector<object_trj_t> const& trlet_list,
+			   vector<array<float, 4> > const& model,
+			   matrix<float> const& Tff,
+			   vector<int> const& plan_time,
+			   vector<vector<planning_result_item_t> > const& plan_results,
+			   matrix<float>& Plff,
+			   matrix<vector<object_trj_t> >& gap_trlet_list,
+			   matrix<int>& gap_rind,
+			   matrix<matrix<int> > & gap_paths,
+			   directory_structure_t &ds)
+{
+
+    using namespace boost::lambda;
+    int Ncam = gi.img2grd.size2();
+    int num_obj = trlet_list.size();
+    int ng = num_obj;
+
+    int T = seq[0].size();
+
+    matrix<vector<float> > cost_mat;
+    matrix<vector<float> > dist_mat;
+    matrix<vector<matrix<int> > > reduced_paths;
+    real_timer_t timer;
+    //1. matching planning to trajectories at two ends
+    std::cout<<timer.elapsed()/1000.0f<<":\t1. matching planning to trajectories at two ends"<<std::endl;
+    if(0==world.rank())
+    {
+	match_plan_to_trlet(seq, gi, plan_advance, trlet_list, Tff, plan_time, plan_results,
+			cost_mat, dist_mat, reduced_paths);
+    }
+    mpi::broadcast(world, cost_mat, 0);
+    mpi::broadcast(world, dist_mat, 0);
+    mpi::broadcast(world, reduced_paths, 0);
+
+
+    //2. Allocate and fill bbs
+    std::cout<<timer.elapsed()/1000.0f<<":\t2. Allocate and fill bbs"<<std::endl;
+
+    if(0==world.rank())
+    {
+	compute_plan_gap_trlet(gi, T, Ncam, trlet_list, Tff,
+		       reduced_paths, gap_trlet_list );
+    }
+    mpi::broadcast(world, gap_trlet_list, 0);
+    //
+    vis_plan_gap_trlets(gi, trlet_list, Tff, reduced_paths, gap_trlet_list,
+			dist_mat, cost_mat, ds);
+
+
+    //3. Refinement and get scores
+    std::cout<<timer.elapsed()/1000.0f<<":\t3. Refinement and get scores"<<std::endl;
+    compute_plan_gap_scores(world, seq, gi, P, trlet_list, model, Tff, gap_trlet_list );
+    if(0==world.rank())
+	vis_plan_gap_scores(seq, gap_trlet_list, ds);
+
+    //4. Compute Plff
+    std::cout<<timer.elapsed()/1000.0f<<":\t4. Compute Plff"<<std::endl;
+    select_plan_gap_paths(Tff, Ncam, gap_trlet_list, dist_mat, reduced_paths,
+			  Plff,  gap_rind, gap_paths);
+    std::cout<<timer.elapsed()/1000.0f<<":\texit"<<std::endl;
+
+    std::for_each(Plff.data().begin(), Plff.data().end(), _1 -= plff_thr);
+
+}
+
+
+
+#endif

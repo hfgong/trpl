@@ -1,0 +1,168 @@
+#ifndef __STATISTICS__HPP__INCLUDED__
+#define __STATISTICS__HPP__INCLUDED__
+
+#include <boost/numeric/ublas/matrix.hpp>
+#include <boost/numeric/ublas/matrix_proxy.hpp>
+#include <boost/numeric/ublas/matrix_expression.hpp>
+#include <boost/numeric/ublas/triangular.hpp>
+#include <boost/numeric/ublas/lu.hpp>
+#include <boost/numeric/ublas/vector_proxy.hpp>
+#include <boost/math/constants/constants.hpp>
+
+
+#include "cvpr_stub.hpp"
+
+BEGIN_NAMESPACE_CVPR
+
+//sparse matrix used by UMFPACK
+template <class Float>
+struct sparse_matrix_t
+{
+    typedef boost::numeric::ublas::compressed_matrix<Float,
+						     boost::numeric::ublas::column_major, 0, 
+						     boost::numeric::ublas::unbounded_array<int>,
+						     boost::numeric::ublas::unbounded_array<double> > 
+    type;
+
+};
+
+
+//const float EM_DMEM_THR  = 0.02f;
+const float EM_DMEM_THR  = 0.1f;
+
+template <class Float>
+struct EM_subsamp_opt 
+{
+    bool use_prev_model;
+    int stride;
+    Float minvar;
+    EM_subsamp_opt(int stride_=4, bool prev=false, Float minvar_=10.0f)
+	:stride(stride_), use_prev_model(prev), minvar(minvar_) {}
+};
+
+template <class Float>
+struct EM_plain_opt 
+{
+    Float minvar;
+    EM_plain_opt(Float minvar_=10.0f)
+	: minvar(minvar_) {}
+};
+
+//multivariate gaussian
+template <class Float>
+struct gaussian_t
+{
+    int dim() const {return mean.size();}
+    gaussian_t(){}
+    gaussian_t(int d): mean(d), var(d, d){}
+    boost::numeric::ublas::vector<Float> mean;
+    boost::numeric::ublas::matrix<Float> var;
+};
+
+
+//mixture of multivariate gaussians
+template <class Float>
+struct gaussian_mixture_t
+{
+    int K() const {return pis.size();};
+    gaussian_mixture_t(){}
+    gaussian_mixture_t(int k):pis(k), items(k){}
+    boost::numeric::ublas::vector<Float> pis;
+    boost::numeric::ublas::vector<gaussian_t<Float> > items;
+    //vector<vector<Float> > means;
+    //vector<matrix<Float> > vars;
+};
+
+
+END_NAMESPACE_CVPR
+
+#include "detail/statistics_detail.hpp"
+
+BEGIN_NAMESPACE_CVPR
+
+template <class Float>
+void EM_gaussian_mixture(boost::numeric::ublas::matrix<Float> const& data,
+			 int K,  gaussian_mixture_t<Float>& mix,
+			 EM_plain_opt<Float> const& opt) 
+{
+    detail::EM_gaussian_mixture(data, K, mix, opt);
+}
+
+template <class Float>
+void EM_gaussian_mixture(boost::numeric::ublas::matrix<Float> const& datao,
+			 int K,  gaussian_mixture_t<Float>& mix,
+			 EM_subsamp_opt<Float> const& opt) 
+{
+    detail::EM_gaussian_mixture(datao, K, mix, opt);
+}
+
+
+template <class Float>
+void gaussian_mixture_loglike(gaussian_mixture_t<Float> const& mix,
+			      boost::numeric::ublas::matrix<Float> const& data,
+			      boost::numeric::ublas::vector<Float>& loglike)
+{
+    detail::gaussian_mixture_loglike(mix, data, loglike);
+}
+
+
+template <class V1, class Float>
+void posterior_from_loglike(V1 const& loglike,
+			   boost::numeric::ublas::vector<Float> const& logpis,
+			   boost::numeric::ublas::vector<Float>& post)
+{
+    detail::posterior_from_loglike(loglike, logpis, post);
+}
+
+
+template <class Float>
+void gaussian_loglike(boost::numeric::ublas::vector<Float> const& mean, 
+		      boost::numeric::ublas::matrix<Float> const& var,
+		      boost::numeric::ublas::matrix<Float> const& data,
+		      boost::numeric::ublas::vector<Float>& loglike) 
+{
+    detail::gaussian_loglike(mean, var, data, loglike);
+}
+
+
+template <class Float>
+void gaussian_loglike(gaussian_t<Float> const& g,
+		      boost::numeric::ublas::matrix<Float> const& data,
+		      boost::numeric::ublas::vector<Float>& loglike) 
+{
+    detail::gaussian_loglike(g, data, loglike);
+}
+
+
+template <class Float>
+void weighted_column_mean_var_prune(const boost::numeric::ublas::matrix<Float>& data,
+				    const boost::numeric::ublas::vector<Float>& weight,
+				    Float thr,
+				    boost::numeric::ublas::vector<Float>& mean,
+				    boost::numeric::ublas::matrix<Float>& var) 
+{
+    detail::weighted_column_mean_var_prune(data, weight, thr, mean, var);
+}
+
+template <class Float>
+void weighted_column_mean_var(boost::numeric::ublas::matrix<Float> const& data,
+			      boost::numeric::ublas::vector<Float> const& weight,
+			      boost::numeric::ublas::vector<Float>& mean,
+			      boost::numeric::ublas::matrix<Float>& var) 
+{
+    detail::weighted_column_mean_var_prune(data, weight, -1.0f, mean, var);
+}
+
+
+template <class Float>
+void column_mean_var(boost::numeric::ublas::matrix<Float> const& data,
+		     boost::numeric::ublas::vector<Float>& mean,
+		     boost::numeric::ublas::matrix<Float>& var) 
+{
+    detail::column_mean_var(data, mean, var);
+}
+
+
+END_NAMESPACE_CVPR
+
+#endif

@@ -1,0 +1,8 @@
+echo "running ----------------------LINPROG_PLAN--------------------------------"
+a=/data/insecure/haifeng/whole_sequence
+LD_LIBRARY_PATH=${a}/openmpi-1.4.2/build/lib:$LD_LIBRARY_PATH
+PATH=${a}/openmpi-1.4.2/build/bin:$PATH
+
+../../whole_sequence/openmpi-1.4.2/build/bin/mpirun -x LD_LIBRARY_PATH=${a}/openmpi-1.4.2/build/bin --prefix ${a}/openmpi-1.4.2/build/  -np 7 ./linprog_plan
+
+

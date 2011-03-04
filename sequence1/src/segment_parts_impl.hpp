@@ -1,0 +1,104 @@
+#ifndef __SEGMENT_PARTS_IMPL_HPP_INCLUDED_
+#define __SEGMENT_PARTS_IMPL_HPP_INCLUDED_
+
+void segment_parts(object_info_t& oi,
+		   vector<std::vector<std::string> > const &seq, int tt,
+		   vector<CImg<unsigned char> > const& images,
+		   vector<matrix<matrix<unsigned char> > >& seg_list);
+
+void save_seg_list(std::string const& name,
+		   vector<matrix<matrix<unsigned char> > > const& seg_list)
+{
+    std::ofstream fout(name.c_str());
+    boost::archive::text_oarchive oa(fout);
+
+    oa << seg_list;
+}
+
+void load_seg_list(std::string const& name,
+		   vector<matrix<matrix<unsigned char> > > & seg_list)
+{
+    std::ifstream fin(name.c_str());
+    boost::archive::text_iarchive ia(fin);
+
+    ia >> seg_list;
+}
+
+template <class M1, class M2, typename Float, typename Float2>
+void segment_part_one(M1 const& im, vector<Float> const& bbx, matrix<Float2> const& p,
+		      matrix<Float2> const& q, matrix<Float> const& part_rects,
+		      M2 & seg)
+{
+    using namespace boost::lambda;
+    vector<int> bbx2(bbx.size());
+
+    int s1 = array3d_traits<M1>::size2(im);
+    int s2 = array3d_traits<M1>::size3(im);
+
+    std::transform(bbx.begin(), bbx.end(), bbx2.begin(), ll_static_cast<int>(_1+0.5));
+
+    array2d_traits<M2>::change_size(seg, bbx2(3)-bbx2(1)+1, bbx2(2)-bbx2(0)+1);
+
+    //seg = -1;
+
+    for(int yy=bbx2(1); yy<=bbx2(3); ++yy)
+    {
+	for(int xx=bbx2(0); xx<=bbx2(2); ++xx)
+	{
+	    array2d_traits<M2>::ref(seg, yy-bbx2(1), xx-bbx2(0)) = 255;
+	    for(int kk=0; kk<part_rects.size1(); ++kk)
+	    {
+		if(xx<part_rects(kk, 0) || xx>part_rects(kk, 2)) continue;
+		if(yy<part_rects(kk, 1) || yy>part_rects(kk, 3)) continue;
+
+		if(xx<0 || xx>= s2) continue;
+		if(yy<0 || yy>= s1) continue;
+		int ir = static_cast<int>(array3d_traits<M1>::ref(im, 0, yy, xx)/32);
+		int ig = static_cast<int>(array3d_traits<M1>::ref(im, 1, yy, xx)/32);
+		int ib = static_cast<int>(array3d_traits<M1>::ref(im, 2, yy, xx)/32);
+		int ibin = ir+ig*8+ib*8*8;
+		Float2 lratio = std::log((p(kk, ibin)+1e-6)/(q(kk, ibin)+1e-6));
+
+		if(lratio>0)   array2d_traits<M2>::ref(seg, yy-bbx2(1), xx-bbx2(0)) = kk;
+
+	    }
+	}
+    }
+}
+
+//template <>
+void segment_parts(object_info_t& oi,
+		   vector<std::vector<std::string> > const &seq, int tt,
+		   vector<CImg<unsigned char> > const& images,
+		   vector<matrix<matrix<unsigned char> > >& seg_list)
+{
+    typedef float Float;
+    int Ncam = seq.size();
+    vector<object_trj_t> & trlet_list=oi.trlet_list;
+    int nobj =  oi.curr_num_obj;
+    int T = seq[0].size();
+    int np = oi.model.size();
+
+    for(int cam=0; cam<Ncam; ++cam)
+    {
+	for(int nn=0; nn<nobj; ++nn)
+	{
+	    if(trlet_list(nn).trj.size()==0) continue;
+	    if(tt<trlet_list(nn).startt || tt>trlet_list(nn).endt) continue;
+
+	    vector<Float> bbx(row(trlet_list(nn).trj(cam), tt));
+	    Float ww = trlet_list(nn).trj(cam)(tt, 2) - trlet_list(nn).trj(cam)(tt, 0);
+	    Float hh = trlet_list(nn).trj(cam)(tt, 3) - trlet_list(nn).trj(cam)(tt, 1);
+
+	    matrix<Float> rects;
+	    compute_part_rects(trlet_list(nn).trj(cam)(tt, 0), trlet_list(nn).trj(cam)(tt, 1),
+			       ww, hh, oi.model, rects);
+
+	    
+	    segment_part_one(images(cam), bbx, trlet_list(nn).hist_p(cam),
+			     trlet_list(nn).hist_q(cam), rects, seg_list(cam)(nn, tt));
+	}
+    }
+}
+
+#endif

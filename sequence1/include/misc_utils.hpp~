@@ -1,0 +1,350 @@
+#ifndef MISC_UTILS_HPP__INCLUDED
+#define MISC_UTILS_HPP__INCLUDED
+
+#include <boost/numeric/ublas/matrix.hpp>
+#include <boost/numeric/ublas/matrix_proxy.hpp>
+#include <boost/numeric/ublas/matrix_expression.hpp>
+#include <boost/numeric/ublas/vector_proxy.hpp>
+
+
+#include <algorithm>
+#include <vector>
+#include <string>
+#include "cvpr_stub.hpp"
+
+BEGIN_NAMESPACE_CVPR
+
+template <class T, class S>
+struct require_same_type;
+
+template <class T>
+struct require_same_type<T, T>{};
+
+
+template <class Mat>
+Mat columns(const Mat& mat, const boost::numeric::ublas::vector<bool>& flag)
+{
+    int size2 = 0;
+    for(int ii=0; ii<flag.size(); ++ii)
+    {
+	if(flag(ii)) size2++;
+    }
+    Mat res(mat.size1(), size2);
+    int pp = 0;
+    for(int cc=0; cc<mat.size2(); ++cc)
+    {
+	if(!flag(cc)) continue;
+	column(res, pp) = column(mat, cc);
+	pp++;
+    }
+    return res;
+}
+
+
+template <class Mat1, class Mat2>
+void reshape_yxf2fp(const Mat1& mat, int nc, Mat2& data)
+{
+    int np = mat.size1()*mat.size2()/nc;
+    data = Mat2(nc, np);
+    int pp = 0;
+    for(int yy=0; yy<mat.size1(); ++yy)
+    {
+	for(int xx=0; xx<mat.size2()/nc; ++xx)
+	{
+	    for(int cc=0; cc<nc; ++cc) {
+		data(cc, pp) = mat(yy, xx*nc+cc);
+	    }
+	    pp++;
+	}
+    }
+}
+
+
+
+template <class Mat, class T>
+void row_sum(const Mat& mat, boost::numeric::ublas::vector<T>& res)
+{
+    typedef require_same_type<typename Mat::value_type, T>
+	Mat_and_Vec_must_have_the_same_value_type;
+    int nr = mat.size1();
+    res = boost::numeric::ublas::vector<T>(nr);
+    for(int kk=0; kk<nr; ++kk) {
+	res(kk) = sum(row(mat, kk));
+    }
+}
+
+template <class Mat, class T>
+void column_sum(const Mat& mat, boost::numeric::ublas::vector<T>& res)
+{
+    typedef require_same_type<typename Mat::value_type, T>
+	Mat_and_Vec_must_have_the_same_value_type;
+    int nc = mat.size2();
+    res = boost::numeric::ublas::vector<T>(nc);
+    for(int kk=0; kk<nc; ++kk) {
+	res(kk) = sum(column(mat, kk));
+    }
+}
+
+template <class Mat>
+typename Mat::value_type matrix_max(const Mat& mat)
+{
+    return *(std::max_element(mat.data().begin(), mat.data().end()));
+}
+
+template <class Mat>
+typename Mat::value_type matrix_min(const Mat& mat)
+{
+    return *(std::min_element(mat.data().begin(), mat.data().end()));
+}
+
+template <class Mat, class OutIt>
+void row_sum(const Mat& mat, OutIt& res)
+{
+    int nr = mat.size1();
+    for(int kk=0; kk<nr; ++kk) {
+	*res = sum(row(mat, kk));
+	++res;
+    }
+}
+
+template <class Mat, class OutIt>
+void column_sum(const Mat& mat, OutIt& res)
+{
+    int nc = mat.size2();
+    for(int kk=0; kk<nc; ++kk) {
+	*res = sum(column(mat, kk));
+	++res;
+    }
+}
+
+template <class Mat, class Vec>
+double eigs(Mat const& A, Vec& vec)
+{
+    int dim = A.size1();
+    vec = Vec(dim);
+    Vec tmp(dim);
+    std::fill(vec.begin(), vec.end(), std::sqrt(1.0f/dim));
+    double lam = 0;
+    for(int it=0; it<200; ++it)
+    {
+	//std::cout<<"eigs it="<<it<<std::endl;
+	axpy_prod(A, vec, tmp, true);
+	double lam2 = norm_2(tmp);
+	vec = tmp/lam2;
+
+	if(std::abs(lam2-lam)<1e-6) break;
+	lam = lam2;
+
+	//vec = prod(A, vec);
+	//vec /= norm(vec);
+    }
+    axpy_prod(A, vec, tmp, true);
+    return norm_2(tmp);
+}
+
+// Robust computation of log sum_i exp(ml_i)
+// It is useful for log-likelihood of mixture models
+// robust computation with underflow prevention
+template <class Vec>
+inline typename Vec::value_type log_sum_exp(Vec const& ml)
+{
+    typedef typename Vec::value_type Float;
+    Float maxml = *(std::max_element(ml.begin(), ml.end()));
+    Float temp=0;
+    for(int mm=0; mm<ml.size(); ++mm)    {
+	Float v = ml(mm)-maxml;	
+	temp += std::exp(v);
+    }
+    return maxml+std::log(temp);
+}
+
+template <class Vec>
+inline typename Vec::value_type log_sum_exp_sort(Vec const& ml)
+{
+    typedef typename Vec::value_type Float;
+    Vec ml2(ml);
+    Float maxml = *(std::max_element(ml2.begin(), ml2.end()));
+    for(int mm=0; mm<ml2.size(); ++mm)    {
+	ml2(mm)-=maxml;	
+    }
+    std::sort(ml2.begin(), ml2.end());
+    Float temp=0;
+    for(int mm=0; mm<ml2.size(); ++mm)    {
+	temp += std::exp(ml2(mm));
+    }
+
+    return maxml+std::log(temp);
+}
+
+
+struct nbrhood_t
+{
+    static int dy[8];
+    static int dx[8];
+};
+
+int nbrhood_t::dy[8]={0, 1, 0, -1, 1, 1, -1, -1};
+int nbrhood_t::dx[8]={1, 0, -1, 0, 1, -1, -1, 1};
+
+
+template <template<class> class Vector=boost::numeric::ublas::vector, class SType=std::size_t>
+struct splitter_t
+{
+    splitter_t(Vector<SType> const& flag)
+	:flag_(flag){	initialize();       }
+
+    Vector<SType> flag_;
+    Vector<SType> count_;
+    Vector<SType> index_;
+    SType cap_;
+
+    template <class DType>
+    Vector<Vector<DType> >  operator()(Vector<DType> const& vec) const {
+	Vector<Vector<DType> > vec_block(cap_);
+	for(SType jj=0; jj<cap_; ++jj)
+	{
+	    vec_block(jj) = Vector<DType>(count_(jj));
+	}
+
+	for(SType ii=0; ii<vec.size(); ++ii)
+	{
+	    SType gi = flag_(ii);
+	    vec_block(gi)(index_(ii)) = vec(ii);
+	}
+
+	return vec_block;
+    }
+
+    template <class DType>
+    Vector<DType> merge(Vector<Vector<DType> > const& vec_block) const{
+	Vector<DType> vec(flag_.size());
+	for(SType ii=0; ii<vec.size(); ++ii)
+	{
+	    SType gi = flag_(ii);
+	    vec(ii) = vec_block(gi)(index_(ii));
+	}
+	return vec;
+    }
+
+    template<template<class> class Mat, class SPMat>
+    Mat<SPMat> split_sparse_mat(SPMat const& mat) const {
+	Mat<SPMat> mat_block(cap_, cap_);
+
+	for(SType ii=0; ii<cap_; ++ii)
+	{
+	    for(SType jj=0; jj<cap_; ++jj)
+	    {
+		int nnz = mat.nnz()*count_(ii)*count_(jj)/(mat.size1()*mat.size2())+2;
+		mat_block(ii, jj) = SPMat(count_(ii), count_(jj), nnz);					  
+	    }
+	}
+	typedef typename SPMat::const_iterator1 iter1;
+	typedef typename SPMat::const_iterator2 iter2;
+
+	for(iter1 i1 = mat.begin1(); i1 != mat.end1(); ++i1)
+	{
+	    SType ii = i1.index1();
+	    SType gi = flag_(ii);
+	    for(iter2 i2=i1.begin(); i2 != i1.end(); ++i2)
+	    {
+		SType jj = i2.index2();
+		SType gj = flag_(jj);
+		mat_block(gi, gj)(index_(ii), index_(jj)) = *i2;
+	    }
+	}
+	return mat_block;
+    }
+private:
+    void initialize() {
+	cap_ = 1 + *std::max_element(flag_.begin(), flag_.end());
+	count_ = Vector<SType>(cap_);
+	for(SType ii=0; ii<cap_; ++ii)
+	{
+	    count_(ii) = std::count(flag_.begin(), flag_.end(), ii);
+	}
+
+	index_ = Vector<SType>(flag_.size());
+	Vector<SType> cur(cap_);
+	std::fill(cur.begin(), cur.end(), 0);
+	for(SType ii=0; ii<flag_.size(); ++ii)
+	{
+	    index_(ii) = cur(flag_(ii));
+	    cur(flag_(ii))++;
+	}
+    }
+};
+
+template<template<class> class Mat, class SPMat, template<class> class Vector, class SType>
+Mat<SPMat> split_sparse_mat(splitter_t<Vector, SType> const& splitter, SPMat const& mat)
+{
+    return splitter.split_sparse_mat<Mat, SPMat>(mat);
+}
+
+
+template <class DType>
+struct leaf_type_t
+{
+    typedef DType type;
+};
+
+template <class DType, class AType>
+struct leaf_type_t<boost::numeric::ublas::matrix<DType, AType> >
+{
+    typedef typename leaf_type_t<DType>::type type;
+};
+
+template <class DType, class AType>
+struct leaf_type_t<boost::numeric::ublas::vector<DType, AType> >
+{
+    typedef typename leaf_type_t<DType>::type type;
+};
+
+
+template<class T>
+boost::numeric::ublas::matrix<T>
+inverse(boost::numeric::ublas::matrix<T> const& input)
+{
+    using namespace boost::numeric::ublas;
+    typedef permutation_matrix<std::size_t> pmatrix;
+
+    // create a working copy of the input
+    matrix<T> A(input);
+
+    // create a permutation matrix for the LU-factorization
+    pmatrix pm(A.size1());
+
+    // perform LU-factorization
+    int res = lu_factorize(A, pm);
+    if (res != 0)
+	return matrix<T>();
+
+    // create identity matrix of "inverse"
+    matrix<T> inv = identity_matrix<T> (A.size1());
+
+    // backsubstitute to get the inverse
+    lu_substitute(A, pm, inv);
+
+    return inv;
+}
+
+
+END_NAMESPACE_CVPR
+
+//Copy_if was dropped from the standard library by accident.
+namespace std {
+template<typename In, typename Out, typename Pred>
+Out copy_if(In first, In last, Out res, Pred Pr)
+{
+    while (first != last)
+    {
+	if (Pr(*first))	    *res++ = *first;
+	++first;
+    }
+    return res;
+}
+}
+
+
+
+
+#endif

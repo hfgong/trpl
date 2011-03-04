@@ -1,0 +1,506 @@
+#include <boost/mpi/environment.hpp>
+#include <boost/mpi/communicator.hpp>
+#include <boost/filesystem.hpp>
+
+#include <boost/numeric/ublas/matrix.hpp>
+#include <boost/numeric/ublas/matrix_proxy.hpp>
+#include <boost/numeric/ublas/io.hpp>
+
+#include <boost/format.hpp>
+
+#include <boost/lambda/lambda.hpp>
+#include <boost/lambda/bind.hpp>
+
+#include <iostream>
+#include <fstream>
+
+#include <CImg.h>
+
+#include "real_timer.hpp"
+#include "text_file.hpp"
+#include "ublas_cimg.hpp"
+#include "ublas_random.hpp"
+
+#include "bbseg_joint.hpp"
+#include "labelmap.hpp"
+#include "cvpr_array_traits.hpp"
+
+using namespace cimg_library;
+
+namespace mpi = boost::mpi;
+namespace fs = boost::filesystem;
+namespace ublas = boost::numeric::ublas;
+
+using namespace cvpr;
+
+
+using namespace bbsegj;
+
+
+#include "input_output.hpp"
+
+
+void test_weighted_column_mean_var()
+{
+    using namespace boost::numeric::ublas;
+    //bbseg_t bbs;
+    randn_t<float> rand1(3.0f, 1.0f);
+    matrix<float> data0=rand_matrix<float>(3, 10000, rand1);
+    //std::cout<<data<<std::endl;
+
+    randn_t<float> rand2(1.0f, 1.0f);
+    matrix<float> prj = rand_matrix<float>(2, 3, rand2);
+    matrix<float> data = prod(prj, data0);
+
+    vector<float> mean;
+    matrix<float> var;
+
+    vector<float> fg = scalar_vector<float>(data.size2(), 1);
+    weighted_column_mean_var(data, fg, mean, var);
+
+    std::cout<<"mean="<<mean<<std::endl;
+    std::cout<<"var="<<var<<std::endl;
+    std::cout<<"prj="<<prj<<std::endl;
+    std::cout<<"prj*prjT="<<prod(prj, trans(prj))<<std::endl;
+}
+
+void test_gaussian_loglike()
+{
+    typedef float Float;
+    using namespace boost::numeric::ublas;
+    //bbseg_t bbs;
+    randn_t<Float> rand1(0.0f, 1.0f);
+    matrix<Float> data0=rand_matrix<Float>(3, 10000, rand1);
+    //std::cout<<data<<std::endl;
+
+    randn_t<Float> rand2(1.0f, 1.0f);
+    matrix<Float> prj = rand_matrix<Float>(2, 3, rand2);
+    matrix<Float> data = prod(prj, data0);
+
+    vector<Float> mean;
+    matrix<Float> var;
+
+    vector<Float> fg = scalar_vector<Float>(data.size2(), 1);
+    weighted_column_mean_var(data, fg, mean, var);
+
+    std::cout<<"mean="<<mean<<std::endl;
+    std::cout<<"var="<<var<<std::endl;
+    std::cout<<"=========================================="<<std::endl;
+
+    matrix<Float> x = matrix_range<matrix<Float> >(data, range(0, data.size1()), range(0, 3));
+
+    vector<Float> loglike;
+    gaussian_loglike<Float>(mean, var, x, loglike);
+    std::cout<<"x="<<x<<std::endl;
+    std::cout<<"loglike="<<loglike<<std::endl;
+
+}
+
+void test_em()
+{
+    typedef float Float;
+    using namespace boost::numeric::ublas;
+    //bbseg_t bbs;
+
+    randn_t<Float> rand1(0.0f, 1.0f); rand1.seed(21);
+    randn_t<Float> rand2(-6.0f, 1.0f); rand2.seed(22);
+    matrix<Float> data0=rand_matrix<Float>(3, 200, rand1);
+    matrix<Float> data1=rand_matrix<Float>(3, 800, rand2);
+
+    matrix<Float> data(data0.size1(), data0.size2()+data1.size2());
+    typedef matrix_range<matrix<Float> > mat_range; 
+    project(data, range(0, 3), range(0, data0.size2())) = data0;
+    project(data, range(0, 3), range(data0.size2(), data0.size2()+data1.size2()))=data1;
+
+#if 0
+    matrix<Float> data(1, 8);
+    data(0, 0) = -1; data(0, 1) = 0; data(0, 2) = 0; data(0, 3) = 1;
+    data(0, 4) = 9; data(0, 5) = 10; data(0, 6) = 10; data(0, 7) = 11;
+#endif
+
+    vector<Float> fgconf;
+    int K = 2;
+    gaussian_mixture_t<Float> mix;
+
+    fgconf = scalar_vector<Float>(data.size2(), 1);
+
+    EM_gaussian_mixture(data, K, mix, EM_plain_opt<Float>(1e-6));
+
+    std::cout<<"pis="<<mix.pis<<std::endl;
+    std::cout<<"means(0)="<<mix.items(0).mean<<std::endl;
+    std::cout<<"means(1)="<<mix.items(1).mean<<std::endl;
+
+    std::cout<<"vars(0)="<<mix.items(0).var<<std::endl;
+    std::cout<<"vars(1)="<<mix.items(1).var<<std::endl;
+
+}
+
+void test_em2()
+{
+    typedef float Float;
+    using namespace boost::numeric::ublas;
+    //bbseg_t bbs;
+
+    randn_t<Float> rand1(0.0f, 1.0f); rand1.seed(0);
+    randn_t<Float> rand2(-2.0f, 1.0f); rand2.seed();
+    matrix<Float> data0=rand_matrix<Float>(3, 400, rand1);
+    matrix<Float> data1=rand_matrix<Float>(3, 600, rand2);
+
+    randn_t<Float> rand3(1.0f, 1.0f); rand3.seed(1);
+    randn_t<Float> rand4(1.0f, 2.0f); rand4.seed();
+    matrix<float> prj1 = rand_matrix<float>(3, 3, rand3);
+    matrix<float> prj2 = rand_matrix<float>(3, 3, rand4);
+    matrix<float> data0x = prod(prj1, data0);
+    matrix<float> data1x = prod(prj2, data1);
+
+    matrix<Float> data(data0.size1(), data0.size2()+data1.size2());
+    //typedef matrix_range<matrix<Float> > mat_range; 
+    project(data, range(0, 3), range(0, data0.size2())) = data0x;
+    project(data, range(0, 3), range(data0.size2(), data0.size2()+data1.size2()))=data1x;
+
+
+    int K = 2;
+    gaussian_mixture_t<Float> mix;
+
+    real_timer_t timer;
+    EM_gaussian_mixture(data, K, mix, EM_plain_opt<Float>(1e-6));
+    std::cout<<"time: "<<timer.elapsed()<<std::endl;
+
+    std::cout<<"pis="<<mix.pis<<std::endl;
+    std::cout<<"means(0)="<<mix.items(0).mean<<std::endl;
+    std::cout<<"means(1)="<<mix.items(1).mean<<std::endl;
+    std::cout<<"prj2*x  ="<<prod(prj2, scalar_vector<Float>(3, -2.0f))<<std::endl;
+
+    std::cout<<"vars(0)   ="<<mix.items(0).var<<std::endl;
+    std::cout<<"prj1*prj1T="<<prod(prj1, trans(prj1))<<std::endl;
+
+    std::cout<<"vars(1)   ="<<mix.items(1).var<<std::endl;
+    std::cout<<"prj2*prj2T="<<prod(prj2, trans(prj2))<<std::endl;
+
+
+
+}
+
+void test_em3(bool subsamp)
+{
+    typedef float Float;
+    using namespace boost::numeric::ublas;
+    //bbseg_t bbs;
+    randn_t<Float> rand1(0.0f, 1.0f); rand1.seed(11);
+    randn_t<Float> rand2(2.0f, 1.0f); rand2.seed(12);
+    randn_t<Float> rand3(6.0f, 1.0f); rand3.seed(13);
+    randn_t<Float> rand4(9.0f, 1.0f); rand4.seed(14);
+
+    matrix<Float> data0=rand_matrix<Float>(3, 2000, rand1);
+    matrix<Float> data1=rand_matrix<Float>(3, 3000, rand2);
+    matrix<Float> data2=rand_matrix<Float>(3, 2000, rand3);
+    matrix<Float> data3=rand_matrix<Float>(3, 3000, rand4);
+
+    randn_t<Float> randx1(1.0f, 1.0f); randx1.seed(111);
+    randn_t<Float> randx2(1.0f, 2.0f); randx2.seed(112);
+    randn_t<Float> randx3(0.0f, 1.0f); randx3.seed(113);
+    randn_t<Float> randx4(0.0f, 2.0f); randx4.seed(114);
+    matrix<float> prj1 = rand_matrix<float>(3, 3, randx1);
+    matrix<float> prj2 = rand_matrix<float>(3, 3, randx2); 
+    matrix<float> prj3 = rand_matrix<float>(3, 3, randx3);
+    matrix<float> prj4 = rand_matrix<float>(3, 3, randx4);
+
+    matrix<float> data0x = prod(prj1, data0);
+    matrix<float> data1x = prod(prj2, data1);
+    matrix<float> data2x = prod(prj3, data2);
+    matrix<float> data3x = prod(prj4, data3);
+
+    int s0 = data0.size2();
+    int s1 = data1.size2();
+    int s2 = data2.size2();
+    int s3 = data3.size2();
+
+    int dim = data0.size1();
+    int np = s0+s1+s2+s3;
+
+    matrix<Float> data(dim, np);
+    //typedef matrix_range<matrix<Float> > mat_range; 
+    project(data, range(0, dim), range(0, s0)) = data0x;
+    project(data, range(0, dim), range(s0, s0+s1))=data1x;
+    project(data, range(0, dim), range(s0+s1, s0+s1+s2)) = data2x;
+    project(data, range(0, dim), range(s0+s1+s2, np))=data3x;
+
+
+
+    vector<bool> fgconf(np);
+    int K = 2;
+    gaussian_mixture_t<Float> mix;
+
+    project(fgconf, range(0, np/2)) = scalar_vector<bool>(np/2, false);
+    project(fgconf, range(np/2, np)) = scalar_vector<bool>(np-np/2, true);
+
+    matrix<Float> datax = columns(data, fgconf);
+
+    real_timer_t timer;
+    if(subsamp)
+	EM_gaussian_mixture(datax, K, mix, EM_subsamp_opt<Float>(10, 1e-6));
+    else
+	EM_gaussian_mixture(datax, K, mix, EM_plain_opt<Float>(1e-6));
+
+    std::cout<<"time: "<<timer.elapsed()<<std::endl;
+
+    std::cout<<"pis="<<mix.pis<<std::endl;
+#if 0
+    std::cout<<"means(0)="<<mix.items(0).mean<<std::endl;
+    std::cout<<"prj1*x  ="<<prod(prj1, scalar_vector<Float>(3, 0.0f))<<std::endl;
+    std::cout<<"means(1)="<<means(1)<<std::endl;
+    std::cout<<"prj2*x  ="<<prod(prj2, scalar_vector<Float>(3, 2.0f))<<std::endl;
+
+    std::cout<<"vars(0)   ="<<mix.items(0).var<<std::endl;
+    std::cout<<"prj1*prj1T="<<prod(prj1, trans(prj1))<<std::endl;
+
+    std::cout<<"vars(1)   ="<<mix.items(1).var<<std::endl;
+    std::cout<<"prj2*prj2T="<<prod(prj2, trans(prj2))<<std::endl;
+#else
+    std::cout<<"means(0)="<<mix.items(0).mean<<std::endl;
+    std::cout<<"prj1*x  ="<<prod(prj3, scalar_vector<Float>(3, 6.0f))<<std::endl;
+    std::cout<<"means(1)="<<mix.items(1).mean<<std::endl;
+    std::cout<<"prj2*x  ="<<prod(prj4, scalar_vector<Float>(3, 9.0f))<<std::endl;
+
+
+    std::cout<<"vars(0)   ="<<mix.items(0).var<<std::endl;
+    std::cout<<"prj1*prj1T="<<prod(prj3, trans(prj3))<<std::endl;
+
+    std::cout<<"vars(1)   ="<<mix.items(1).var<<std::endl;
+    std::cout<<"prj2*prj2T="<<prod(prj4, trans(prj4))<<std::endl;
+#endif
+
+
+}
+
+
+//#define  HALF_SIZE
+
+int test_bbsegj() 
+{
+    using namespace boost::numeric::ublas;
+    using namespace boost;
+    const std::string prefix = "../images/";
+    const std::string output = "../output2/";
+    const std::string workspace = "../workspace/";
+    const std::string figures = "../figures/";
+
+    boost::array<std::vector<std::string>, 2> seq;
+    read_sequence_list(prefix, seq);
+    int T = seq[0].size();
+    int Ncam = 2;
+
+    vector<boost::array<float, 4> > model;
+    load_part_model(model);
+
+    //for(int tt=world.rank(); tt<T; tt+=world.size())
+    int tt = 13; //27; //1; 
+    {
+	CImg<unsigned char> images[Ncam];
+	matrix<float> mat[Ncam];
+	for(int cam=0; cam<Ncam; ++cam)
+	{
+	    images[cam] = CImg<unsigned char>(seq[cam][tt].c_str());
+#ifdef HALF_SIZE
+	    images[cam].resize_halfXY();
+#endif
+	    //CImg<unsigned char> origin;//(images[cam]);
+	    //array3d_copy(images[cam], origin);
+	    images[cam].blur_median(5);
+	    //CImg<unsigned char> tmp;
+	    //array3d_cat3(origin, images[cam], tmp);
+	    //show_image("median filter", tmp);
+	    mat[cam] = ublas_matrix<float>(images[cam]);
+	}
+
+	for(int cam=0; cam<Ncam; ++cam)
+	{
+	    fs::path seq_path = seq[cam][tt];
+
+	    std::string image_name = fs::basename(seq_path);
+	    fs::path image_folder = seq_path.branch_path();
+
+	    fs::path ped_path = fs::path(workspace)/(image_name+"_3d_ped.txt");
+
+	    matrix<float> ped_boxes;
+	    read_text_matrix(ped_path.string(), ped_boxes);
+#ifdef HALF_SIZE
+	    ped_boxes /= 2.0f;
+#endif
+
+	    int nc = images[cam].spectrum();
+	    real_timer_t frame_timer;
+	    matrix<matrix<int> > segs;
+	    //matrix<matrix<int> > segs2;
+	    matrix<array<int, 4> > exts;
+	    //matrix<array<int, 4> > exts2;
+	    matrix<array<int, 4> > parts;
+	    //matrix<array<int, 4> > parts2;
+
+	    bbsegment_image_joint(mat[cam], nc, model, ped_boxes,
+				  segs, parts, exts);
+	    //CImg<unsigned char> tmp(images[cam]);
+	    draw_detection_segments(images[cam], segs, parts, exts);
+
+	    fs::path det_path = fs::path(figures)/(image_name+"_det_testj.jpg");
+	    images[cam].save_jpeg(det_path.string().c_str(), 90);
+
+	    //draw_detection_segments(tmp, segs2, parts2, exts2);
+	    //fs::path det_path2 = fs::path(figures)/(image_name+"_det_testj2.jpg");
+	    //tmp.save_jpeg(det_path2.string().c_str(), 90);
+
+
+	    std::cout<<"frame="<<tt<<" done in "<<frame_timer.elapsed()/1000.0f<<"s."<<std::endl;
+
+	}
+    }
+
+    return 0;
+}
+
+
+void test_shape_map()
+{
+    using namespace boost::lambda;
+    boost::array<int, 4> ext_ri;
+    boost::array<int, 4> in_ri;
+
+    ext_ri[0] = 0; ext_ri[1] = 0;
+    ext_ri[2] = 100; ext_ri[3] = 100;
+    in_ri[0] = 25; in_ri[1] = 25;
+    in_ri[2] = 75; in_ri[3] = 75;
+
+    matrix<float> smap;
+    prepare_shape_map(ext_ri, in_ri, smap);
+
+    float minv = *(std::min_element(smap.data().begin(), smap.data().end()));
+    float maxv = *(std::max_element(smap.data().begin(), smap.data().end()));
+
+    matrix<unsigned char> disp(smap.size1(), smap.size2());
+
+    std::transform(smap.data().begin(), smap.data().end(), disp.data().begin(),
+		  ll_static_cast<unsigned char>((_1-minv)/(maxv-minv)*255.0f));
+
+
+    CImg<unsigned char> image = cvpr::cimg<unsigned char>(disp);
+
+    CImgDisplay main_disp(image, "smap");
+    while (!main_disp.is_closed())
+    {
+	main_disp.wait();
+	if (main_disp.button() && main_disp.mouse_y()>=0) {
+	    const int y = main_disp.mouse_y();
+	    const int x = main_disp.mouse_x();
+	    std::cout<<smap(y, x)<<std::endl;
+
+        }
+    }
+    //return 0;
+
+}
+
+void test_labelmap()
+{
+    using namespace boost::numeric::ublas;
+    using namespace boost::lambda;
+
+    const std::string prefix = "../images/";
+
+    boost::array<std::vector<std::string>, 2> seq;
+    read_sequence_list(prefix, seq);
+    int T = seq[0].size();
+    int Ncam = 2;
+
+    CImg<unsigned char> images[Ncam];
+    matrix<float> mat[Ncam];
+    int tt=0;
+    for(int cam=0; cam<Ncam; ++cam)
+    {
+	images[cam] = CImg<unsigned char>(seq[cam][tt].c_str());
+	//images[cam].resize_halfXY();
+	mat[cam] = ublas_matrix<float>(images[cam]);
+    }
+    matrix<float> matx = project(mat[0], slice(0, 1, 100), slice(0, 3, 200));
+    matrix<int> lb(matx.size1(), matx.size2());
+    std::transform(matx.data().begin(), matx.data().end(), lb.data().begin(), ll_static_cast<int>(_1/25));
+    matrix<int> cmp(lb.size1(), lb.size2());
+
+    real_timer_t timer;
+    int ncomp = labelmap_connected_components(lb, cmp);
+    std::cout<<"time: "<<timer.elapsed()<<std::endl;
+
+
+    vector<int> count=scalar_vector<int>(ncomp, 0);
+
+    //std::for_each(cmp.data().begin(), cmp.data().end(), count(_1)) ;
+
+    labelmap_count_components(cmp, ncomp, count);
+    std::cout<<"time: "<<timer.elapsed()<<std::endl;
+    std::cout<<count<<std::endl;
+
+    show_image("window_name", lb);
+    show_image("window_name", cmp);
+
+
+    //std::cout<<cmp<<std::endl;
+
+}
+
+
+void test_sort_with_index()
+{
+    using namespace boost::lambda;
+
+    typedef float Float;
+    randn_t<Float> rand(1,1); rand.seed();
+    matrix<Float> X = rand_matrix<Float>(2, 3, rand);
+    typedef std::pair<Float, int> Pair;
+
+    vector<Pair> x2(X.data().size());
+    std::transform(X.data().begin(), X.data().end(), boost::counting_iterator<int>(0),
+		  x2.begin(), bind(std::make_pair<Float, int>, _1, _2));
+    std::sort(x2.begin(), x2.end(), bind(&Pair::first, _1)<
+	      bind(&Pair::first, _2));
+
+    vector<Float> x_sorted(X.data().size());
+    vector<int> idx_sorted(X.data().size());
+
+    std::transform(x2.begin(), x2.end(), x_sorted.begin(), 
+		   bind(&Pair::first, _1) );
+    std::transform(x2.begin(), x2.end(), idx_sorted.begin(), 
+		   bind(&Pair::second, _1) );
+    std::cout<<X<<std::endl;
+    std::cout<<x_sorted<<std::endl;
+    std::cout<<idx_sorted<<std::endl;
+
+}
+
+void test_pointer_size()
+{
+    std::cout<<"sizeof(int*)="<<sizeof(int*)<<std::endl;
+}
+
+
+int main(int argc, char * argv[])
+{
+    //test_weighted_column_mean_var();
+    //test_gaussian_loglike();
+    //test_em();
+    //test_em2();
+    
+    //test_em3(true);
+    //test_em3(false);
+
+    test_bbsegj();
+
+    //test_shape_map();
+
+    //test_labelmap();
+    //test_sort_with_index();
+    //test_pointer_size();
+
+    return 0;
+}
+
+
+

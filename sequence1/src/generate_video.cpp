@@ -1,0 +1,524 @@
+#include <boost/mpi.hpp>
+#include "tracking_data_package.hpp"
+#include "tracking_detail.hpp"
+#include "planning.hpp"
+
+#include <boost/lambda/if.hpp>
+#include <boost/lambda/switch.hpp>
+
+struct data_package_t
+{
+    vector<object_trj_t> good_trlet_list;
+    vector<object_trj_t> final_trj_list;
+    matrix<int> final_state_list;
+    vector<vector<int> > final_trj_index;
+    matrix<float> Aff;
+    matrix<vector<object_trj_t> > gap_trlet_list;
+    matrix<float> Plff;
+    matrix<int> Tff;
+    matrix<int> links;
+    matrix<int> gap_rind;
+
+    vector<object_trj_t> merged_trj_list;
+    vector<vector<int> > merged_trj_index;
+    matrix<int> merged_state_list;
+
+    vector<int> plan_time;
+    vector<vector<planning_result_item_t> > plan_results;
+
+    matrix<vector<matrix<int> > > reduced_paths;
+
+
+    void load( directory_structure_t const& ds)	{
+	{
+	    std::string name = ds.workspace+"good_trlet_list.xml";
+	    std::ifstream fin(name.c_str());
+	    boost::archive::xml_iarchive ia(fin);
+	    ia >> BOOST_SERIALIZATION_NVP(good_trlet_list);
+	}
+
+	{
+	    std::string name = ds.workspace+"final_trj_list_plan.xml";
+	    std::ifstream fs(name.c_str());
+	    boost::archive::xml_iarchive ia(fs);
+	    ia >> BOOST_SERIALIZATION_NVP(final_trj_list);
+	}
+	{
+	    std::string name = ds.workspace+"final_state_list_plan.txt";
+	    std::ifstream fs(name.c_str());
+	    fs>>final_state_list;
+	    fs.close();
+	}
+	{
+	    std::string name = ds.workspace+"final_trj_index_plan.txt";
+	    std::ifstream fs(name.c_str());
+	    fs >> final_trj_index;
+	    fs.close();
+	}
+
+	{
+	    std::string name = ds.workspace+"Aff_plan.txt";
+	    std::ifstream fs(name.c_str());
+	    fs>>Aff;
+	    fs.close();
+	}
+
+	{
+	    std::string name = ds.workspace+"gap_trlet_list_plan.xml";
+	    std::ifstream fs(name.c_str());
+	    boost::archive::xml_iarchive ar(fs);
+	    ar >> BOOST_SERIALIZATION_NVP(gap_trlet_list);
+	}
+
+	{
+	    std::string name = ds.workspace+"Plff.txt";
+	    std::ifstream fs(name.c_str());
+	    fs >> Plff;
+	    fs.close();
+	}
+	{
+	    std::string name = ds.workspace+"gap_rind.txt";
+	    std::ifstream fs(name.c_str());
+	    fs>>gap_rind;
+	    fs.close();
+	}
+
+	{
+	    std::string name = ds.workspace+"Tff.txt";
+	    std::ifstream fs(name.c_str());
+	    fs >> Tff;
+	    fs.close();
+	}
+	{
+	    std::string name = ds.workspace+"links_plan.txt";
+	    std::ifstream fs(name.c_str());
+	    fs >> links;
+	    fs.close();
+	}
+
+	{
+	    std::string name = ds.workspace+"merged_trj_list_plan.xml";
+	    std::ifstream fin(name.c_str());
+	    boost::archive::xml_iarchive ia(fin);
+	    ia >> BOOST_SERIALIZATION_NVP(merged_trj_list);
+	}
+
+	{
+	    std::string name = ds.workspace+"merged_trj_index_plan.txt";
+	    std::ifstream fin(name.c_str());
+	    fin>>merged_trj_index;
+	    fin.close();
+	}
+
+	{
+	    std::string name = ds.workspace+"merged_state_list_plan.txt";
+	    std::ifstream fin(name.c_str());
+	    fin >> merged_state_list;
+	    fin.close();
+	}
+
+	{
+	    std::string name = ds.workspace+"plan_time.xml";
+	    std::ifstream fin(name.c_str());
+	    boost::archive::xml_iarchive ia(fin);
+	    ia >> BOOST_SERIALIZATION_NVP(plan_time);
+	}
+    
+	{
+	    std::string name = ds.workspace+"plan_results.xml";
+	    std::ifstream fin(name.c_str());
+	    boost::archive::xml_iarchive ia(fin);
+	    ia >> BOOST_SERIALIZATION_NVP(plan_results);
+	}
+
+
+	{
+	    std::string name = ds.workspace+"reduced_paths.txt";
+	    std::ifstream fin(name.c_str());
+	    fin>>reduced_paths;
+	    fin.close();
+	}
+
+    }
+
+};
+
+
+
+void draw_one_path(matrix<int> const& path,
+		   matrix<double> const& grd2img,
+		   CImg<unsigned char> & vis, 
+		   int th, unsigned char* const col)
+{
+    using namespace boost::lambda;
+    matrix_column<matrix<int> const> ipx(path, 0);
+    matrix_column<matrix<int> const> ipy(path, 1);
+
+    vector<double> gx, gy;
+    array1d_transform(ipx, gx, ll_static_cast<float>(_1));
+    array1d_transform(ipy, gy, ll_static_cast<float>(_1));
+    vector<double> imx, imy;
+    apply_homography(grd2img, gx, gy, imx, imy);
+
+    vector<int> imxi, imyi;
+    array1d_transform(imx, imxi, ll_static_cast<int>(_1+0.5l));
+    array1d_transform(imy, imyi, ll_static_cast<int>(_1+0.5l));
+
+    for(int dd=0; dd+1< path.size1(); ++dd)
+    {
+	for(int dx=-th; dx<=th; ++dx)
+	{
+	    for(int dy=-th; dy<=th; ++dy)
+	    {
+
+		vis.draw_line(imxi(dd)+dx, imyi(dd)+dy, 0,
+			      imxi(dd+1)+dx, imyi(dd+1)+dy, 0,
+			      col, 1);
+	    }
+	}
+    }
+
+}
+
+
+bool draw_ground_fig(object_trj_t const& trj, int tt,
+		     vector<matrix<int> > const& paths,
+		     int rind,
+		     CImg<unsigned char>& ground_fig,
+		     geometric_info_t const& gi)
+{
+
+    array3d_traits<CImg<unsigned char> >::change_size(
+	ground_fig, 3, gi.ground_lim.ymax, gi.ground_lim.xmax);
+
+    array3d_fill(ground_fig, 255);
+
+    unsigned char pcol[3]={220, 220, 255};
+    unsigned char tcol[3]={255, 0, 0};
+    unsigned char yellow[3]={255, 255, 0};
+    unsigned char black[3]={0, 0, 0};
+
+    unsigned char green[3]={0, 255, 0};
+    unsigned char blue[3]={0, 0, 255};
+
+    unsigned char cyan[3] = {0, 255, 125};
+    unsigned char yellow2[3]={128, 128, 0};
+
+    CImg<double> poly;
+    array2d_copy(gi.poly_ground, poly);
+
+    ground_fig.draw_polygon(poly, pcol);
+
+    ground_fig.draw_polygon(poly, black, 1, ~0U);
+
+
+    if(trj.trj.size()==0) return false;
+    int t1 = trj.startt;
+    int t2 = trj.endt;
+
+    if(tt<t1 || tt>t2) return false;
+
+    object_trj_t::trj_3d_t const& s=trj.trj_3d;
+
+    for(int gg=0; gg< gi.goal_ground.size2(); ++gg)
+    {
+	ground_fig.draw_circle(static_cast<int>(gi.goal_ground(0, gg)),
+				static_cast<int>(gi.goal_ground(1, gg)),
+				10, yellow);
+    }
+
+    for(int pp=0; pp<paths.size(); ++pp)
+    {
+	matrix<int> const& path = paths(pp);
+	for(int dd=0; dd+1< path.size1(); ++dd)
+	{
+	    int th = 1;
+	    for(int dx=-th; dx<=th; ++dx)
+	    {
+		for(int dy=-th; dy<=th; ++dy)
+		{
+
+		    ground_fig.draw_line(path(dd, 0)+dx, path(dd, 1)+dy, 0,
+					 path(dd+1, 0)+dx, path(dd+1, 1)+dy, 0,
+					 blue, 1);
+		}
+	    }
+	}
+    }
+
+    if(rind<paths.size())
+    {
+	int pp = rind;
+	matrix<int> const& path = paths(pp);
+	for(int dd=0; dd+1< path.size1(); ++dd)
+	{
+	    int th = 3;
+	    for(int dx=-th; dx<=th; ++dx)
+	    {
+		for(int dy=-th; dy<=th; ++dy)
+		{
+
+		    ground_fig.draw_line(path(dd, 0)+dx, path(dd, 1)+dy, 0,
+					 path(dd+1, 0)+dx, path(dd+1, 1)+dy, 0,
+					 cyan, 1);
+		}
+	    }
+	}
+    }
+
+    for(int tx=t1; tx<tt; ++tx)
+    {
+	int th = 1;
+	for(int dx=-th; dx<=th; ++dx)
+	{
+	    for(int dy=-th; dy<=th; ++dy)
+	    {
+
+		ground_fig.draw_line(static_cast<int>(s(tx, 0)+0.5f)+dx,
+				     static_cast<int>(s(tx, 1)+0.5f)+dy, 
+				     static_cast<int>(s(tx+1, 0)+0.5f)+dx,
+				     static_cast<int>(s(tx+1, 1)+0.5f)+dy, 
+				     tcol, 1);
+	    }
+	}
+    }
+
+    ground_fig.draw_circle(static_cast<int>(s(tt, 0)+0.5f),
+			   static_cast<int>(s(tt, 1)+0.5f), 
+			   10, yellow2);
+    ground_fig.draw_circle(static_cast<int>(s(tt, 0)+0.5f),
+			   static_cast<int>(s(tt, 1)+0.5f), 
+			   10, black, 1, 1);
+
+
+}
+
+
+void vis_sequences(directory_structure_t const& ds,
+		   vector<std::vector<std::string> > const& seq,
+		   geometric_info_t const& gi,
+		   vector<object_trj_t> const& good_trlet_list,
+		   matrix<vector<object_trj_t> > const& gap_trlet_list,
+		   matrix<int> const& gap_rind,
+		   vector<int> const& plan_time,
+		   matrix<vector<matrix<int> > > const& reduced_paths,
+		   vector<object_trj_t> const& trj_list,
+		   matrix<int> const& state_list,
+		   vector<vector<int> > const& trj_index)
+{
+    using namespace boost::lambda;
+    int T = seq[0].size();
+    int Ncam = 2;
+
+    vector<matrix<double> > const& grd2img = gi.grd2img;
+    vector<matrix<double> > const& goals_im = gi.goals_im;
+
+    unsigned char ccol[3]={255, 255, 0};
+
+    unsigned char fcol[3]={255, 255, 255};
+    unsigned char bcol[3]={0, 0, 0};
+
+    unsigned char green[3] = {0, 255, 0};
+    unsigned char blue[3] = {0, 255, 0};
+    unsigned char cyan[3] = {0, 255, 125};
+
+    unsigned char yellow[3]={255, 255, 0};
+    typedef array3d_traits<CImg<unsigned char> > A;
+
+    for(int nn=0; nn<trj_list.size(); ++nn)
+    {
+	object_trj_t const& trj = trj_list(nn);
+	for(int tt=trj.startt; tt<=trj.endt; ++tt)
+	{
+	    //vector<CImg<unsigned char> > images(Ncam);
+	    bool ingap = false;
+	    int na = 0;
+	    int nb = 0;
+	    int rind = 0;
+	    for(int ii=0; ii+1<trj_index(nn).size(); ++ii)
+	    {
+		int aa = trj_index(nn)(ii);
+		int bb = trj_index(nn)(ii+1);
+		if(gap_trlet_list(aa, bb).size()==0) continue;
+		if(tt>=gap_trlet_list(aa, bb)(0).startt &&
+		   tt<=gap_trlet_list(aa, bb)(0).endt)
+		{
+		    ingap = true;
+		    na = aa;
+		    nb = bb;
+		    rind = gap_rind(aa, bb);
+		    break;
+		}
+	    }
+
+#if 0
+	    CImg<unsigned char> ground_fig;
+	    if(ingap)
+		draw_ground_fig(trj, tt, reduced_paths(na, nb), rind, ground_fig, gi);
+	    else
+	    {
+		vector<matrix<int> > tmp;
+		draw_ground_fig(trj, tt, tmp, -1, ground_fig, gi);
+	    }
+
+	    {
+		ground_fig.mirror('y');
+		std::string name = ds.output+
+		    str(format("video_grd_plan_%03d_%03d.png")%nn%tt);
+		ground_fig.save_png(name.c_str());
+	    }
+#endif
+	    for(int cam=0; cam<Ncam; ++cam)
+	    {
+		CImg<unsigned char> image = CImg<unsigned char>(seq[cam][tt].c_str());
+		vector<float> b = row(trj.trj(cam), tt);
+		boost::array<int, 4> box;
+		std::transform(b.begin(), b.end(), box.begin(),
+			       ll_static_cast<int>(_1+0.5f));
+
+		CImg<unsigned char> vis;
+		array3d_transform(image, vis, if_then_else_return(_1*7u/5u>255u, 255, _1*7u/5u) );
+		for(int mm=0; mm<trj_list.size(); ++mm)
+		{
+		    if(mm==nn) continue;
+		    vector<float> rf = row(trj_list(mm).trj(cam), tt);
+		    boost::array<int, 4> rect;
+		    std::transform(rf.begin(), rf.end(), rect.begin(),
+				   ll_static_cast<int>(_1+0.5f));
+		    //int dx = 0;
+		    //int dy = 0;
+		    for(int dx=-2; dx<=2; ++dx)
+		    {
+			for(int dy=-2; dy<=2; ++dy)
+			{
+		
+			    unsigned char ocol[3] = {255, 255, 0};
+			    vis.draw_line(rect[0]+dx, rect[1]+dy, 0,
+					  rect[0]+dx, rect[3]+dy, 0, ocol, 1);
+			    vis.draw_line(rect[2]+dx, rect[1]+dy, 0,
+					  rect[2]+dx, rect[3]+dy, 0, ocol, 1);
+			    vis.draw_line(rect[0]+dx, rect[1]+dy, 0,
+					  rect[2]+dx, rect[1]+dy, 0, ocol, 1);
+			    vis.draw_line(rect[0]+dx, rect[3]+dy, 0,
+					  rect[2]+dx, rect[3]+dy, 0, ocol, 1);
+			}
+		    }		
+		}
+
+
+		for(int cc=0; cc<A::size1(vis); ++cc)
+		{
+		    for(int yy= std::max(0, box[1]); yy<= std::min(A::size2(vis)-1, box[3]); ++yy)
+		    {
+			for(int xx= std::max(0, box[0]); xx<= std::min(A::size3(vis)-1, box[2]); ++xx)
+			{
+			    A::ref(vis, cc, yy, xx) = A::ref(image, cc, yy, xx);
+			}
+		    }
+		}
+
+
+		if(ingap)
+		{
+		    for(int gg=0; gg<goals_im(cam).size2(); ++gg)
+		    {
+			vis.draw_circle(static_cast<int>(goals_im(cam)(0, gg)),
+					static_cast<int>(goals_im(cam)(1, gg)),
+					10, yellow);
+		    }
+		}
+		for(int dx=-3; dx<=3; ++dx)
+		{
+		    for(int dy=-3; dy<=3; ++dy)
+		    {
+			unsigned char ocol[3] = {255, 0, 255};
+			vis.draw_line(box[0]+dx, box[1]+dy, 0,
+				      box[0]+dx, box[3]+dy, 0, ocol, 1);
+			vis.draw_line(box[2]+dx, box[1]+dy, 0,
+				      box[2]+dx, box[3]+dy, 0, ocol, 1);
+			vis.draw_line(box[0]+dx, box[1]+dy, 0,
+				      box[2]+dx, box[1]+dy, 0, ocol, 1);
+			vis.draw_line(box[0]+dx, box[3]+dy, 0,
+				      box[2]+dx, box[3]+dy, 0, ocol, 1);
+		    }
+		}
+
+		if(ingap)
+		{
+		    for(int pp=0; pp<reduced_paths(na, nb).size(); ++pp)
+		    {
+			matrix<int> const& path = reduced_paths(na, nb)(pp);
+			draw_one_path(path, grd2img(cam), vis, 1, green);
+			
+		    }
+		    if(gap_rind(na, nb)<reduced_paths(na, nb).size())
+		    {
+			int pp = gap_rind(na, nb);
+			matrix<int> const& path = reduced_paths(na, nb)(pp);
+
+			draw_one_path(path, grd2img(cam), vis, 3, cyan);
+
+		    }
+		}
+		unsigned char fcol[] = {255, 255, 255};
+		unsigned char bcol[] = {0, 0, 0};
+
+		std::string tstr = str(format("%d")%tt);
+		vis.draw_text(1, 1, tstr.c_str(), fcol, bcol, 1, 40);
+
+		std::string name = ds.output+str(format("video_plan_%03d_%1d_%03d.jpg")
+		    %nn%cam%tt);
+		vis.save_jpeg(name.c_str(), 90);
+	    }
+	}
+    }
+}
+
+
+
+int main(int argc, char* argv[])
+{
+    directory_structure_t ds;
+
+    vector<std::vector<std::string> > seq(2);
+    read_sequence_list(ds.prefix, seq);
+    int T = seq[0].size();
+    int Ncam = 2;
+
+    data_package_t data;
+    data.load(ds);
+
+    array<std::size_t, 2> img_size = {768, 1024};
+    geometric_info_t gi;
+    gi.load(ds, img_size);
+
+
+    vector<object_trj_t>& good_trlet_list = data.good_trlet_list;
+    vector<object_trj_t>& final_trj_list = data.final_trj_list;
+    matrix<int>& final_state_list = data.final_state_list;
+    vector<vector<int> >& final_trj_index = data.final_trj_index;
+    matrix<float>& Aff = data.Aff;
+    matrix<vector<object_trj_t> >& gap_trlet_list = data.gap_trlet_list;
+    matrix<float>& Plff = data.Plff;
+    matrix<int>& gap_rind = data.gap_rind;
+    matrix<int>& links = data.links;
+    matrix<int>& Tff = data.Tff;
+
+    vector<object_trj_t>& merged_trj_list = data.merged_trj_list;
+    matrix<int>& merged_state_list = data.merged_state_list;
+    vector<vector<int> >& merged_trj_index = data.merged_trj_index;
+
+
+    vector<int> const& plan_time = data.plan_time;
+    vector<vector<planning_result_item_t> > const& plan_results = data.plan_results;
+
+    matrix<vector<matrix<int> > > const& reduced_paths = data.reduced_paths;
+
+
+    vis_sequences(ds, seq, gi,
+		  good_trlet_list, gap_trlet_list, gap_rind,
+		  plan_time, reduced_paths,
+		  merged_trj_list, merged_state_list, merged_trj_index);
+
+    return 0;
+}

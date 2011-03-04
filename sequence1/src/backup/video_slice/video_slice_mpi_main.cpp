@@ -1,0 +1,180 @@
+#include <boost/mpi.hpp>
+
+#include <boost/filesystem.hpp>
+
+#include <boost/numeric/ublas/matrix.hpp>
+#include <boost/numeric/ublas/matrix_proxy.hpp>
+#include <boost/numeric/ublas/io.hpp>
+
+#include <boost/format.hpp>
+
+#include <boost/lambda/lambda.hpp>
+#include <boost/lambda/casts.hpp>
+
+#include <iostream>
+#include <fstream>
+
+#include <CImg.h>
+
+#include "real_timer.hpp"
+#include "text_file.hpp"
+#include "ublas_cimg.hpp"
+
+#include "cvpr_array_traits.hpp"
+
+using namespace cimg_library;
+
+namespace fs = boost::filesystem;
+using namespace boost;
+using namespace boost::numeric::ublas;
+
+using namespace cvpr;
+
+#include "input_output.hpp"
+
+//#define HALF_IMAGE
+int main(int argc, char* argv[]) 
+{
+
+    mpi::environment env(argc, argv);
+    mpi::communicator world;
+    std::cout << "I am process " << world.rank() << " of " << world.size()
+          << "." << std::endl;
+
+    const std::string prefix = "../images/";
+    const std::string output = "../output2/";
+    const std::string workspace = "../workspace/slice/";
+    const std::string figures = "../figures/";
+
+    if(world.rank()==0)
+    {
+	if ( !fs::exists( figures ) )
+	{
+	    fs::create_directory( figures );
+	}
+	if ( !fs::exists( workspace ) )
+	{
+	    fs::create_directory( workspace );
+	}
+    }
+    world.barrier();
+
+    real_timer_t timer;
+    boost::array<std::vector<std::string>, 2> seq;
+    read_sequence_list(prefix, seq);
+    int T = seq[0].size();
+    int Ncam = 2;
+
+#ifdef HALF_IMAGE
+    shape.resize_halfXY();
+#endif
+
+    if(T<=1) return -1;
+
+    for(int cam=0; cam<Ncam; ++cam)
+    {
+	real_timer_t cam_timer;
+	vector<vector<matrix<unsigned char> > > video(T);
+	//for(int tt=0; tt<T; ++tt)
+	for(int tt=world.rank(); tt<T; tt+=world.size())
+	{
+	    CImg<unsigned char> image;
+	    image = CImg<unsigned char>(seq[cam][tt].c_str());
+#ifdef HALF_IMAGE
+	    image.resize_halfXY();
+#endif
+	    image.blur_median(5);
+	    array3d_copy(image, video[tt]);
+	}
+
+	std::cout<<"\t rank "<<world.rank()<<" finished read camera "<<cam<<"."<<std::endl;
+	int nc, width, height;
+	if(world.rank()==0)
+	{
+	    nc = video[0].size();
+	    width = video[0][0].size2();
+	    height = video[0][0].size1();
+	}
+	mpi::broadcast(world, nc, 0);
+	mpi::broadcast(world, width, 0);
+	mpi::broadcast(world, height, 0);
+
+
+	if(world.rank()==0)
+	{
+	    std::vector<vector<vector<matrix<unsigned char> > > > v;
+	    mpi::gather(world, video, v, 0);
+	    for(int tt=0; tt<T; ++tt)
+	    {
+		if(video[tt].size()>0) continue;
+		for(int r=0; r<world.size(); ++r)
+		{
+		    if(v[r][tt].size()>0)
+		    {			
+			video[tt] = v[r][tt];
+			break;
+		    }
+		}
+	    }
+	}
+	else
+	{
+	    mpi::gather(world, video, 0);
+	}
+	mpi::broadcast(world, video, 0);
+
+
+	multi_array<multi_array<unsigned char, 3>, 1> videow(extents[width]);
+	for(int xx=world.rank(); xx<width; xx+=world.size())
+	{
+	    videow[xx].resize(extents[nc][height][T]);
+
+	    for(int tt=0; tt<T; ++tt)
+	    {
+		for(int cc=0; cc<nc; ++cc)
+		{
+		    for(int yy=0; yy<height; ++yy)
+		    {
+
+			videow[xx][cc][yy][tt] = video[tt][cc](yy, xx);
+		    }
+		}
+	    }
+	    CImg<unsigned char> image;
+	    array3d_copy(videow[xx], image);
+	    std::string name=str(format(workspace+"cam%dtrans_x%04d.png")%(cam+1)%xx);
+	    image.save_png(name.c_str());
+
+	}
+
+	std::cout<<"\tFinished x slice camera "<<cam<<"."<<std::endl;
+
+	multi_array<multi_array<unsigned char, 3>, 1> videoh(extents[height]);
+	for(int yy=world.rank(); yy<height; yy+=world.size())
+	{
+	    videoh[yy].resize(extents[nc][width][T]);
+
+	    for(int tt=0; tt<T; ++tt)
+	    {
+		for(int cc=0; cc<nc; ++cc)
+		{
+
+		    for(int xx=0; xx<width; ++xx)
+		    {
+			videoh[yy][cc][xx][tt] = video[tt][cc](yy, xx);
+		    }
+		}
+	    }
+	    CImg<unsigned char> image;
+	    array3d_copy(videoh[yy], image);
+	    std::string name=str(format(workspace+"cam%dtrans_y%04d.png")%(cam+1)%yy);
+	    image.save_png(name.c_str());
+
+	}
+
+	std::cout<<"\tFinished y slice camera "<<cam<<"."<<std::endl;
+
+	std::cout<<"Finished camera "<<cam<<" in "<<cam_timer.elapsed()/1000.0f<<"s."<<std::endl;
+    }
+    return 0;
+}

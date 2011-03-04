@@ -1,0 +1,124 @@
+#ifndef __FILTER__TRLET__IMPL__HPP__INCLUDED__
+#define __FILTER__TRLET__IMPL__HPP__INCLUDED__
+
+void compute_seg_score(vector<object_trj_t> const &trlet_list,
+		       vector<matrix<matrix<unsigned char> > > const& seg_list,
+		       vector<float>& seg_score  )
+{
+    using namespace boost::lambda;
+
+    int nobj = trlet_list.size();
+    int Ncam = seg_list.size();
+    seg_score = vector<float>(nobj);
+
+    for(int nn=0; nn<nobj; ++nn)
+    {
+	int startt = trlet_list(nn).startt;
+	int endt = trlet_list(nn).endt;
+	float score = 0;
+	for(int tt=startt; tt<=endt; ++tt)
+	{
+	    for(int cam=0; cam<Ncam; ++cam)
+	    {
+		matrix<unsigned char> const& seg=seg_list(cam)(nn, tt);
+		score += std::count_if(seg.data().begin(), seg.data().end(), _1>=0);
+	    }
+	}
+	seg_score(nn) = score/Ncam/(endt-startt+1);
+    }
+}
+
+template <class V1, class V2>
+void flag_to_index(V1 const& flag, V2& index)
+{
+    typedef array1d_traits<V1> A;
+    typedef array1d_traits<V2> B;
+
+
+    int jj = 0;
+    for(int ii=0; ii<A::size(flag); ++ii)
+    {
+	if(A::ref(flag, ii)) ++jj;
+    }
+
+    B::change_size(index, jj);
+
+    jj = 0;
+    for(int ii=0; ii<A::size(flag); ++ii)
+    {
+	if(A::ref(flag, ii))
+	{
+	    B::ref(index, jj) = ii;
+	    ++jj;
+	}
+    }
+}
+
+
+void filter_trlet(vector<object_trj_t> const &trlet_list,
+		  vector<float> const& seg_score,
+		  int min_trlet_len,
+		  float seg_thresh,
+		  vector<object_trj_t> & good_trlet_list,
+		  vector<bool>& good_trlet_flag,
+		  vector<int>& good_trlet_index)
+{
+    int nobj = trlet_list.size();
+
+    good_trlet_flag = scalar_vector<bool>(nobj, false);
+
+    for(int nn=0; nn<nobj; ++nn)
+    {
+	int endt = trlet_list(nn).endt;
+	int startt = trlet_list(nn).startt;
+	int len = endt-startt+1;
+	if(len<min_trlet_len) continue;
+	if(seg_score(nn)<seg_thresh) continue;
+
+	good_trlet_flag(nn) = true;
+    }
+    flag_to_index(good_trlet_flag, good_trlet_index);
+    good_trlet_list = vector<object_trj_t>(good_trlet_index.size());
+    for(int ii=0; ii<good_trlet_list.size(); ++ii)
+    {
+	good_trlet_list(ii) = trlet_list(good_trlet_index(ii));
+    }
+}
+
+void prepare_valid_linkset(vector<object_trj_t> const &trlet_list,
+			   int t_thresh,
+			   float v_thresh,
+			   matrix<int>& Tff)
+{
+    int ng = trlet_list.size();
+    Tff = scalar_matrix<int>(ng, ng, 0);
+
+    for(int ii=0; ii<ng; ++ii)
+    {
+	int nn1 = ii; //good_ind(ii);
+	int endt = trlet_list(nn1).endt;
+	float xgrd1 = trlet_list(nn1).trj_3d(endt, 0);
+
+	for(int jj=0; jj<ng; ++jj)
+	{
+	    int nn2 = jj;//good_ind(jj);
+	    int startt = trlet_list(nn2).startt;
+
+	    float xgrd2 = trlet_list(nn2).trj_3d(startt, 0);
+
+	    if(ii==1 && jj==19) std::cout<<"here1"<<std::endl;
+	    if(endt >= startt) continue;
+	    if(ii==1 && jj==19) std::cout<<"here2"<<std::endl;
+	    if(endt+t_thresh<startt) continue;
+
+	    float dgx = xgrd2 - xgrd1;
+	    if(ii==1 && jj==19) std::cout<<"here3"<<std::endl;
+	    if(std::abs(dgx)/v_thresh>startt-endt) continue;
+	    Tff(ii, jj) = 1;
+	    if(ii==1 && jj==19) std::cout<<"here4"<<std::endl;
+
+	}
+    }
+}
+
+#endif

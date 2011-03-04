@@ -1,0 +1,414 @@
+#ifndef __LINPROG__ALONE__IMPL__HPP__INCLUDED__
+#define __LINPROG__ALONE__IMPL__HPP__INCLUDED__
+
+struct alone_predictor_t
+{
+    float sigma_d;
+    float sigma_w;
+    float lambda_1;
+    float lambda_2;
+    float beta;
+    float alpha;
+
+    alone_predictor_t() {
+	sigma_d = 0.361f;
+	sigma_w = 2.088f;
+	lambda_1 = 2.33f;
+	lambda_2 = 2.073f;
+	beta = 1.462f;
+	alpha = 0.730f;
+    }
+
+    float evaluate_vel(array<float, 2> const& pos,
+		       array<float, 2> const& prev_vel,
+		       float speed,
+		       array<float, 2> const& goal,
+		       array<float, 2> const& vel,
+		       vector<array<float, 2> > const& opos,
+		       vector<array<float, 2> > const& ovel) {
+	float uscale = 200.0f; //each pixel on ground plane is 1/200.0f meter
+	//in this function, unit is meter.
+	float sw = sigma_w*uscale;
+	float sd = sigma_d*uscale;
+	float l1 = lambda_1/uscale/uscale;
+	vector<float> d(opos.size());
+	vector<float> w(opos.size());
+	for(int jj = 0; jj<d.size(); ++jj)
+	{
+	    array<float, 2> k = {pos[0]-opos[jj][0], pos[1]-opos[jj][1]};
+	    array<float, 2> q = {vel[0]-ovel[jj][0], vel[1]-ovel[jj][1]};
+	    float s = (k[0]*q[0]+k[1]*q[1])/(q[0]*q[0]+q[1]*q[1]);
+	    array<float, 2> dv = {k[0]-s*q[0], k[1]-s*q[1]};
+	    d(jj) = dv[0]*dv[0]+dv[1]*dv[1];
+
+	    float cos_phi = -k[0]*prev_vel[0]-k[1]*prev_vel[1];
+	    cos_phi /= std::sqrt(k[0]*k[0]+k[1]*k[1]);
+	    cos_phi /= std::sqrt(prev_vel[0]*prev_vel[0]
+				 +prev_vel[1]*prev_vel[1]);
+
+	    if(cos_phi<=0) w(jj) = 0.0f;
+	    else
+	    {
+		w(jj) = std::exp(-(k[0]*k[0]+k[1]*k[1])/(2*sw*sw)
+				 +beta*std::log((1+cos_phi)/2.0f) );
+	    }
+	}
+	w /= sum(w);
+	float Iscore = 0;
+	for(int jj = 0; jj<d.size(); ++jj)
+	{
+	    Iscore += w(jj)*std::exp(-d(jj)/(2*sd*sd));
+	}
+	float tmp = std::sqrt(vel[0]*vel[0]+vel[1]*vel[1]);
+	float Sscore = (speed-tmp)*(speed-tmp);
+	array<float, 2> da = {goal[0]-pos[0], goal[1]-pos[1]};
+	float Dscore = -(vel[0]*da[0]+vel[1]*da[1]);
+	Dscore /= std::sqrt(vel[0]*vel[0]+vel[1]*vel[1]);
+	Dscore /= std::sqrt(da[0]*da[0]+da[1]*da[1]);
+
+	return Iscore + l1*Sscore + lambda_2*Dscore;
+    }
+
+
+    void predicate(array<float, 2> const& pos,
+		   array<float, 2> const& prev_vel,
+		   float speed,
+		   array<float, 2> const& goal,
+		   array<float, 2> & vel,
+		   vector<array<float, 2> > const& opos,
+		   vector<array<float, 2> > const& ovel) {
+	//unit: milimeter
+
+	array<float, 2>  tmp_vel;
+	float min_score = 100000.0f;
+	for(float dvx=-250.0f; dvx<=250.0f; dvx+=5.0f)
+	{
+	    tmp_vel[0]= prev_vel[0]+dvx;
+	    for(float dvy=-500.0f; dvy<=500.0f; dvy+=10.0f)
+	    {
+		tmp_vel[1]= prev_vel[1]+dvy;
+		float score = evaluate_vel(pos, prev_vel, speed,
+					   goal, tmp_vel, opos, ovel);
+		if(score<=min_score)
+		{
+		    min_score = score;
+		    vel = tmp_vel;
+		}
+
+	    }
+	}
+
+    }
+
+
+};
+
+void compute_trlet_vel(vector<object_trj_t> const& trlet_list,
+		       vector<std::map<int, array<float, 2> > >& trlet_vel)
+{
+    int N = trlet_list.size();
+    trlet_vel = vector<std::map<int, array<float, 2> > >(N);
+    for(int nn=0; nn<N; ++nn)
+    {
+	object_trj_t const& trlet = trlet_list(nn);
+	for(int tt=trlet.startt+1; tt<=trlet.endt-1; ++tt)
+	{
+	    array<float, 2> v = {0, 0};
+	    v[0] = trlet.trj_3d(tt+1, 0)
+		-2*trlet.trj_3d(tt, 0)
+		+trlet.trj_3d(tt-1, 0);
+	    v[1] = trlet.trj_3d(tt+1, 1)
+		-2*trlet.trj_3d(tt, 1)
+		+trlet.trj_3d(tt-1, 1);
+	    trlet_vel[nn][tt] = v;
+	}
+	if(trlet.startt+1 < trlet.endt)
+	{
+	    trlet_vel[nn][trlet.startt] = trlet_vel[nn][trlet.startt+1];
+	    trlet_vel[nn][trlet.endt] = trlet_vel[nn][trlet.endt-1];
+	}
+	else if(trlet.startt+1 == trlet.endt)
+	{
+	    array<float, 2> v = {0, 0};
+	    int tt = trlet.startt;
+	    v[0] = trlet.trj_3d(tt+1, 0)-trlet.trj_3d(tt, 0);
+	    v[1] = trlet.trj_3d(tt+1, 1)-trlet.trj_3d(tt, 1);
+	    trlet_vel[nn][tt] = v;
+	    trlet_vel[nn][tt+1] = v;
+	}
+	else
+	{
+	    array<float, 2> v = {0, 0};
+	    trlet_vel[nn][trlet.startt] = v;
+	}
+    }
+}
+
+
+
+
+
+void prepare_alone_affinity(mpi::communicator& world,
+			   vector<std::vector<std::string> > const& seq,
+			   geometric_info_t const& gi,
+			   parameter_t const& P, int plan_advance,
+			   float plff_thr,
+			   vector<object_trj_t> const& trlet_list,
+			   vector<array<float, 4> > const& model,
+			   matrix<float> const& Tff,
+			   matrix<float>& Alnff,
+			   matrix<object_trj_t>& gap_trlet_list,
+			   matrix<int>& gap_rind,
+			   matrix<matrix<int> > & gap_paths,
+			   directory_structure_t &ds)
+{
+
+    using namespace boost::lambda;
+    int Ncam = gi.img2grd.size();
+    //int ng = good_trlet_index.size();
+    int num_obj = trlet_list.size();
+    int ng = num_obj;
+    gap_trlet_list = matrix<object_trj_t>(ng, ng);
+
+    int T = seq[0].size();
+
+    vector<std::map<int, array<float, 2> > > trlet_vel;
+    compute_trlet_vel(trlet_list, trlet_vel);
+
+#if 0
+    std::cout<<"velocity"<<std::endl;
+    for(int nn=0; nn<num_obj; ++nn)
+    {
+	for(std::map<int, array<float, 2> >::iterator it = trlet_vel[nn].begin();
+	    it != trlet_vel[nn].end(); ++it)
+	    std::cout<<it->first<<": ("<<it->second[0]
+		     <<", "<<it->second[1]<<std::endl;
+    }
+#endif
+    //1. Allocate and fill bbs
+    for(int ii=0; ii<ng; ++ii)
+    {
+	int nn1 = ii; //good_trlet_index(ii);
+	for(int jj=0; jj<ng; ++jj)
+	{
+	    int nn2 = jj; //good_trlet_index(jj);
+	    if(!Tff(ii, jj)) continue;
+	    int t1 = trlet_list(nn1).endt;
+	    int t2 = trlet_list(nn2).startt;
+	    object_trj_t& gap_trlet=gap_trlet_list(ii, jj);
+	    gap_trlet.startt = t1+1;
+	    gap_trlet.endt = t2-1;
+
+	    gap_trlet.trj = vector<matrix<float> >(Ncam);
+	    gap_trlet.scores = scalar_matrix<float>(Ncam, T, 0);
+	    for(int cam=0; cam<Ncam; ++cam)
+	    {
+		gap_trlet.trj(cam) = scalar_matrix<float>(T, 4, 0);
+	    }
+	    matrix<float> ww(2, Ncam), hh(2, Ncam);
+
+	    for(int cam=0; cam<Ncam; ++cam)
+	    {
+		ww(0, cam) = trlet_list(nn1).trj(cam)(t1, 2)
+		    -trlet_list(nn1).trj(cam)(t1, 0);
+		ww(1, cam) = trlet_list(nn2).trj(cam)(t2, 2)
+		    -trlet_list(nn2).trj(cam)(t2, 0);
+		hh(0, cam) = trlet_list(nn1).trj(cam)(t1, 3)
+		    -trlet_list(nn1).trj(cam)(t1, 1);
+		hh(1, cam) = trlet_list(nn2).trj(cam)(t2, 3)
+		    -trlet_list(nn2).trj(cam)(t2, 1);
+	    }
+	    gap_trlet.trj_3d = scalar_matrix<float>(T, 2, 0);
+
+	    vector<float> pos1(row(trlet_list(nn1).trj_3d, t1));
+	    vector<float> pos2(row(trlet_list(nn2).trj_3d, t2));
+
+	    array<float, 2> goal = {pos2(0), pos2(1)};
+	    array<float, 2> prev_vel = {trlet_vel(ii)[t1][0], trlet_vel(ii)[t1][1]};
+	    array<float, 2> pos = {pos1[0], pos1[1]};
+
+	    vector<array<float, 2> > interpos(t2-t1-1);
+	    alone_predictor_t alp;
+#if 0
+	    std::cout<<nn1<<", "<<nn2<<" predicting"<<std::endl;
+	    for(int tt=trlet_list(nn1).startt; tt<=trlet_list(nn1).endt; ++tt)
+	    {
+		std::cout<<trlet_list(nn1).trj_3d(tt, 0)<<", "
+			 <<trlet_list(nn1).trj_3d(tt, 1)<<std::endl;
+	    }
+	    std::cout<<",,,,,,,,,,,,,"<<std::endl;
+#endif
+	    for(int tt=t1+1; tt<=t2-1; ++tt)
+	    {
+		array<float, 2> vel;
+		int cc = 0;
+		for(int ll=0; ll<ng; ++ll)
+		{
+		    if(ll==nn1 || ll==nn2) continue;
+		    if(trlet_list(ll).startt>tt || trlet_list(ll).endt<tt)
+			continue;
+		    ++cc;
+		}
+		vector<array<float, 2> > opos(cc);
+		vector<array<float, 2> > ovel(cc);
+		cc = 0;
+		for(int ll=0; ll<ng; ++ll)
+		{
+		    if(ll==nn1 || ll==nn2) continue;
+		    if(trlet_list(ll).startt>tt || trlet_list(ll).endt<tt)
+			continue;
+		    array<float, 2> tmpp = {trlet_list(ll).trj_3d(tt, 0),
+					    trlet_list(ll).trj_3d(tt, 1)};
+		    opos(cc) = tmpp;
+		    array<float, 2> tmpv = {trlet_vel(ll)[tt][0],
+					    trlet_vel(ll)[tt][1]};
+		    ovel(cc) = tmpv;
+		    ++cc;
+		}
+		vector<float> dp = pos2;
+		std::transform(dp.begin(), dp.end(), pos.begin(), dp.begin(), _1-_2);
+		float speed = norm_2(dp)/(t2-tt+1);
+
+		alp.predicate(pos, prev_vel, speed, goal, vel, opos, ovel);
+		pos[0] += vel[0];
+		pos[1] += vel[1];
+		prev_vel = vel;
+		interpos(tt-t1-1) = pos;
+		//std::cout<<pos[0]<<", "<<pos[1]<<", \tspeed="<<speed<<std::endl;
+	    }
+#if 0
+	    std::cout<<",,,,,,,,,,,,,"<<std::endl;
+	    for(int tt=trlet_list(nn2).startt; tt<=trlet_list(nn2).endt; ++tt)
+	    {
+		std::cout<<trlet_list(nn2).trj_3d(tt, 0)<<", "
+			 <<trlet_list(nn2).trj_3d(tt, 1)<<std::endl;
+	    }
+#endif
+
+	    for(int tt=t1+1; tt<=t2-1; ++tt)
+	    {
+		//vector<float> pos( (pos1*(t2-tt)+pos2*(tt-t1))/(t2-t1));
+		vector<float> pos(2);
+		pos <<= interpos(tt-t1-1)[0] , interpos(tt-t1-1)[1];
+		row(gap_trlet.trj_3d, tt) = pos;
+		for(int cam=0; cam<Ncam; ++cam)
+		{
+		    vector<double> gx(1), gy(1), ix, iy;
+		    gx <<= pos(0);
+		    gy <<= pos(1);
+		    apply_homography(gi.grd2img(cam), gx, gy, ix, iy);
+		    float wwt = (ww(0, cam)*(t2-tt)+ww(1, cam)*(tt-t1))/(t2-t1);
+		    float hht = (hh(0, cam)*(t2-tt)+hh(1, cam)*(tt-t1))/(t2-t1);
+
+		    vector<float> bodyr(4);
+		    bodyr <<= (ix(0)-wwt/2), (iy(0)-hht), (ix(0)+wwt/2), iy(0);
+		    row(gap_trlet.trj(cam), tt) = bodyr;
+
+		}
+	    }
+
+	}
+    }
+
+    //2. Refinement and get scores
+    vector<float> dx(5), dy(5);
+    dx <<= -4, -2, 0, 2, 4;
+    dy <<= -4, -2, 0, 2, 4;
+
+    for(int tt=0; tt<T; ++tt)
+    {
+	std::vector<int> iis, jjs;
+	for(int ii=0; ii<ng; ++ii)
+	{
+	    for(int jj=0; jj<ng; ++jj)
+	    {
+		if(gap_trlet_list(ii, jj).trj.size()==0) continue;
+		int t1 = gap_trlet_list(ii, jj).startt;
+		int t2 = gap_trlet_list(ii, jj).endt;
+		if(t1<=tt&&t2>=tt)
+		{
+		    iis.push_back(ii);
+		    jjs.push_back(jj);
+		}
+	    }
+	}
+	if(iis.size()<=0) continue;
+
+	vector<CImg<unsigned char> > images(Ncam);
+	vector<matrix<float> > grd(Ncam);
+
+	for(int cam=0; cam<Ncam; ++cam)
+	{
+	    images[cam] = CImg<unsigned char>(seq[cam][tt].c_str());
+	}
+
+	for(int kk=0; kk<iis.size(); ++kk)
+	{
+	    int ii = iis[kk];
+	    int jj = jjs[kk];
+	    int nn1 = ii; //good_trlet_index(ii);
+	    int nn2 = jj; //good_trlet_index(jj);
+	    object_trj_t& gap_trlet=gap_trlet_list(ii, jj);
+
+	    for(int cam=0; cam<Ncam; ++cam)
+	    {
+		vector<float> bodyr(row(gap_trlet.trj(cam), tt));
+		matrix<float> cand_rects;
+		enumerate_rects_refine(bodyr, dx, dy, cand_rects);
+		vector<float> cand_score_sum(scalar_vector<float>(cand_rects.size1(), 0));
+
+		array<int, 2> nns={nn1, nn2};
+		for(int ll=0; ll<nns.size(); ++ll)
+		{
+		    int nn = nns[ll];
+		    matrix<float> hist_fscores;
+		    vector<float> cand_hist_score;
+		    get_cand_hist_score(images(cam), model, P.logp1, P.logp2,
+					trlet_list(nn).hist_p(cam),
+					trlet_list(nn).hist_q(cam),
+					cand_rects,
+					cand_hist_score, hist_fscores);
+		    for(int bb=0; bb<cand_hist_score.size(); ++bb)
+		    {
+			if(isnan(cand_hist_score(bb))) cand_hist_score(bb) = -10;
+		    }
+
+		    cand_score_sum += cand_hist_score;
+		}
+		int idx_max = std::max_element(cand_score_sum.begin(),
+					       cand_score_sum.end())
+		    -cand_score_sum.begin();
+		gap_trlet.scores(cam, tt) = cand_score_sum(idx_max)/2;
+		row(gap_trlet.trj(cam), tt) = row(cand_rects, idx_max);
+	    }
+	}
+    }
+
+
+    //3. Compute Alnff
+    Alnff = scalar_matrix<float>(ng, ng, 0);
+
+    for(int ii=0; ii<ng; ++ii)
+    {
+	int nn1 = ii; //good_trlet_index(ii);
+	for(int jj=0; jj<ng; ++jj)
+	{
+	    int nn2 = jj; //good_trlet_index(jj);
+	    if(!Tff(ii, jj)) continue;
+	    object_trj_t gap_trlet=gap_trlet_list(ii, jj);
+	    for(int cam=0; cam<Ncam; ++cam)
+	    {
+		for(int tt=gap_trlet.startt; tt<=gap_trlet.endt; ++tt)
+		{
+		    Alnff(ii, jj) += sat2(gap_trlet.scores(cam, tt), 2.0f, 8.0f) -2;
+		}
+		Alnff(ii, jj) = sat(Alnff(ii, jj), 30.0f);
+	    }
+	}
+    }
+
+}
+
+
+
+#endif

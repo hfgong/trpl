@@ -1,0 +1,2 @@
+horiz_mean =       456.58
+horiz_sig =       7.2302

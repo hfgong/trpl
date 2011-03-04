@@ -1,0 +1,513 @@
+#ifndef __BBSEG_JOINT__HPP__INCLUDED__
+#define __BBSEG_HOINT__HPP__INCLUDED__
+
+#include <boost/numeric/ublas/matrix.hpp>
+#include <boost/numeric/ublas/matrix_proxy.hpp>
+#include <boost/numeric/ublas/matrix_expression.hpp>
+#include <boost/numeric/ublas/triangular.hpp>
+#include <boost/numeric/ublas/lu.hpp>
+#include <boost/numeric/ublas/vector_proxy.hpp>
+
+#include <boost/numeric/bindings/traits/ublas_vector.hpp>
+#include <boost/numeric/bindings/traits/ublas_sparse.hpp>
+#include <boost/numeric/bindings/umfpack/umfpack.hpp>
+
+#include <boost/numeric/ublas/io.hpp>
+#include <boost/math/constants/constants.hpp>
+
+#include <boost/array.hpp>
+
+#include <boost/lambda/lambda.hpp>
+#include <boost/lambda/casts.hpp>
+#include <boost/lambda/bind.hpp>
+
+#include <algorithm>
+
+#include <CImg.h>
+
+#include "real_timer.hpp"
+#include "text_file.hpp"
+#include "labelmap.hpp"
+#include "misc_utils.hpp"
+#include "statistics.hpp"
+
+//define for better formatting in editor
+#define BEGIN_NAMESPACE_BBSEG namespace bbsegj {
+
+#define END_NAMESPACE_BBSEG };
+
+
+BEGIN_NAMESPACE_BBSEG
+
+using namespace boost::numeric::ublas;
+using namespace boost::lambda;
+namespace umf=boost::numeric::bindings::umfpack;
+
+using namespace cvpr;
+
+using boost::array;
+
+
+//sparse matrix used by UMFPACK, double-only
+typedef sparse_matrix_t<double>::type umf_sparse_matrix;
+
+#include "bbseg_joint_detail.hpp"
+
+template <class Mat, class Float>
+void biased_graph_cut(const Mat& mat, int nc, Float sig, int KN,
+		      Float alpha, const matrix<Float>& prior,
+		      umf_sparse_matrix& W, matrix<Float>& X)
+{
+    typedef require_same_type<typename Mat::value_type, Float>
+	Mat_value_type_should_be_the_same_as_Float;
+
+    int nrow = mat.size1();
+    int ncol = mat.size2()/nc;
+    int np = nrow*ncol;
+
+    // Compute W matrix if necessary
+    if(W.size1()==0 || W.size2()==0)
+    {
+	//real_timer_t timer;
+	preapre_affinity_matrix(W, mat, nc, sig, KN);
+    }
+
+    vector<double> Bhat(np);
+    std::copy(prior.data().begin(), prior.data().end(), Bhat.data().begin());
+
+    // Using correct access order, super fast
+    vector<Float> Dv=scalar_vector<Float>(np, 0);
+    typedef umf_sparse_matrix::const_iterator2 citer2;
+    typedef umf_sparse_matrix::const_iterator1 citer1;
+    typedef umf_sparse_matrix::iterator2 iter2;
+    typedef umf_sparse_matrix::iterator1 iter1;
+
+    for(citer2 it=W.begin2(); it != W.end2(); ++it)
+    {
+	for(citer1 it2=it.begin(); it2 != it.end(); ++it2)
+	{
+	    Dv(it2.index1()) += *it2;
+	}
+    }
+
+    Float meanDv = sum(Dv)/Dv.size();
+    umf_sparse_matrix D_W = W;
+    for(iter2 it= D_W.begin2(); it != D_W.end2(); ++it)
+    {
+	int jj = it.index2();
+	for(iter1 it2=it.begin(); it2 != it.end(); ++it2)
+	{
+	    int ii = it2.index1();
+	    if(ii==jj) { *it2 = Dv(ii)+alpha*meanDv - *it2;  }
+	    else   {  *it2 = -*it2;   }
+	}
+    }
+
+    vector<double> Xhat(np);
+
+    umf::symbolic_type<double> symb;
+    umf::numeric_type<double> nume;
+    umf::symbolic (D_W, symb); 
+    umf::numeric (D_W, symb, nume); 
+    umf::solve(D_W, Xhat, Bhat, nume);  
+
+    X = matrix<Float>(nrow, ncol);
+    for(int ii=0; ii<nrow; ++ii)    {
+	for(int jj=0; jj<ncol; ++jj)	{
+	    X(ii, jj) = Xhat(ii*ncol+jj);
+	}
+    }
+
+}
+
+template <class Float>
+struct bbseg_one_opt
+{
+    int KF; //number of mixtures in FG
+    int KB; //number of mixtures in BG
+    Float sig; //sigma in affinity matrix W
+    int KN; //KN=0, 4-neighborhood; KN=1, 8-neighborhood
+    Float alpha; // affinity energy coefficient
+    Float beta;  // lilelihood energy coefficient
+    Float gamma; // prior energy coefficient
+    int NS; //stride controller
+    int max_it; //number of iterations
+    Float fgr_l, fgr_u; //bound of foreground ratio
+    Float min_ccr; //connected component ratio lower bound
+    bbseg_one_opt() {
+	KF = 2; KB = 3;
+	sig=60; //for 0~255 pixel value
+	KN = 0;
+	alpha = 0.2;
+	beta = 0.8;
+	gamma = 0.5;
+	NS = 5;
+	max_it = 3;
+	fgr_l = 1.0/6.0;
+	fgr_u = 2.0/3.0;
+	min_ccr = 1.0/200.0;
+    }
+};
+
+template <class Float>
+void bbseg_one(const matrix<Float>& matrect, int nc, const matrix<float>& smap,
+	       boost::array<gaussian_mixture_t<Float>, 2>& models,
+	       matrix<int>& seg, const bbseg_one_opt<Float>& opt=bbseg_one_opt<Float>()) 
+{
+
+    //Initialize segmentation
+    int ss1 = matrect.size1(); //(ext_ri[3]-ext_ri[1]+1);
+    int ss2 = matrect.size2()/nc; //(ext_ri[2]-ext_ri[0]+1);
+    int np = ss1*ss2;
+
+
+    //boost::array<int, 2> K = {2, 3};
+    boost::array<int, 2> K = {opt.KF, opt.KB};
+    Float sig = opt.sig;//60;
+    int KN = opt.KN; //Four neighborhood
+    Float alpha = opt.alpha;//0.2;//0.05; //0.1;
+
+
+    matrix<Float> data;
+    reshape_yxf2fp(matrect, nc, data);
+
+    umf_sparse_matrix W;  //affinity matrix
+    boost::array<vector<Float>, 2> loglike; //gmm loglike
+    matrix<Float> X; //gcut solution
+
+    boost::array<vector<bool>, 2> z;
+    z[0] = vector<bool>(np);
+    z[1] = vector<bool>(np);
+
+    std::transform(smap.data().begin(), smap.data().end(), z[0].data().begin(), _1>0.0f);
+    std::transform(smap.data().begin(), smap.data().end(), z[1].data().begin(), _1<=0.0f);
+
+    seg = matrix<int>(ss1, ss2);
+
+    for(int it=0; it<opt.max_it; ++it)
+    {
+	//Initialize background and foreground model
+	real_timer_t timer1;
+
+	int fg_count = std::count(z[0].begin(), z[0].end(), true);
+	int bg_count = np-fg_count;
+
+	boost::array<int, 2> count = {fg_count, bg_count};
+
+	const int NS=opt.NS; //5;//4;//3;
+	for(int mm=0; mm<models.size(); ++mm)
+	{
+	    int stride  = count[mm]/5000*NS;
+	    if(stride<NS) stride = NS;
+	    matrix<Float> datax = columns(data, z[mm]);
+	    do_em_gmm(K[mm], models[mm], datax, stride, it);
+	}
+
+	for(int mm=0; mm<models.size(); ++mm)
+	{
+	    gaussian_mixture_loglike(models[mm], data, loglike[mm]);
+	}
+
+	Float logpf = std::log(Float(fg_count));
+	Float logpb = std::log(Float(bg_count));
+
+	vector<Float> lldiff = loglike[0]-loglike[1];
+	matrix<Float> lr_image(ss1, ss2);
+	std::transform(lldiff.begin(), lldiff.end(), lr_image.data().begin(), _1+logpf-logpb);
+#if 0
+	if(it==0)
+	    std::cout<<"\t\ttime to first em is "<<timer1.elapsed()<<std::endl;
+	else
+	    std::cout<<"\t\t\ttime to other em is "<<timer1.elapsed()<<std::endl;
+#endif
+	real_timer_t timer;
+
+	//matrix<Float> mask = lr_image*0.8+smap*0.5;
+	matrix<Float> mask = lr_image*opt.beta+smap*opt.gamma;
+	biased_graph_cut(matrect, nc, sig, KN, alpha, mask, W, X);
+	//std::cout<<"\t\ttime to gc is "<<timer.elapsed()<<std::endl;
+
+	real_timer_t timer_cc;
+
+	score_to_segment(X, seg, opt.fgr_l, opt.fgr_u);
+	
+	// too small threshold will result in null segment
+	int ccthr = static_cast<int>(ss1*ss2*opt.min_ccr);
+	remove_small_connected_components(seg, ccthr);
+	
+	std::cout<<"\ttime of plain: "<<timer1.elapsed()<<std::endl;
+	if(it == opt.max_it-1) break;
+	std::transform(seg.data().begin(), seg.data().end(), z[0].data().begin(), _1>0);
+	std::transform(seg.data().begin(), seg.data().end(), z[1].data().begin(), _1<=0);
+
+    }
+
+}
+
+template <class Float>
+void bbsegj_one(const matrix<Float>& mat, int nc, 
+		array<gaussian_mixture_t<Float>, 2>& models,
+		array<gaussian_t<Float>, 2>& pos_models, 
+		array<int, 4>& inbb,
+		array<int, 4>& extbb,
+		matrix<int>& seg, const bbseg_one_opt<Float>& opt=bbseg_one_opt<Float>()) 
+{
+
+    array<int, 2> K = {opt.KF, opt.KB};
+    Float sig = opt.sig;//60;
+    int KN = opt.KN; //Four neighborhood
+    Float alpha = opt.alpha;//0.2;//0.05; //0.1;
+
+    spatial_gaussian_from_seg(seg, pos_models);
+    for(int ii=0; ii<2; ++ii)
+    {
+	pos_models[ii].mean(0) += extbb[0];
+	pos_models[ii].mean(1) += extbb[1];
+	//std::cout<<pos_models[ii].mean<<std::endl;
+	//std::cout<<pos_models[ii].var<<std::endl;
+    }
+
+
+    for(int it=0; it<opt.max_it; ++it)
+    {
+	real_timer_t timer;
+//-------------------------------
+	array<int, 4> extbb_old = extbb;
+	prepare_ext_box<Float, int>(pos_models[0],
+				    mat.size1(), mat.size2()/nc, inbb, extbb);
+	//todo compensate seg to the new extbb, before copy it to z vector
+	matrix<int> seg_old = seg;
+	seg = scalar_matrix<int>(extbb[3]-extbb[1]+1, extbb[2]-extbb[0]+1, 0);
+	for(int yy=0; yy<seg.size1(); ++yy)
+	{
+	    int truey = yy+extbb[1];
+	    if(truey<extbb_old[1] || truey>extbb_old[3]) continue;
+	    int oldy = truey-extbb_old[1];
+	    for(int xx=0; xx<seg.size2(); ++xx)
+	    {
+		int truex = xx+extbb[0];
+		if(truex<extbb_old[0] || truex>extbb_old[2]) continue;
+		int oldx = truex-extbb_old[0];
+		seg(yy, xx) = seg_old(oldy, oldx);
+	    }
+	}
+	for(int ii=0; ii<2; ++ii)
+	{
+	    pos_models[ii].mean(0) -= extbb[0];
+	    pos_models[ii].mean(1) -= extbb[1];
+	}
+
+	matrix<Float> smap;
+	prepare_shape_map(extbb, pos_models, smap);
+
+//--------------------------------
+	matrix<Float> matrect = extract_rect_image(mat, nc, extbb);
+
+	//Initialize segmentation
+	int ss1 = matrect.size1();    //(ext_ri[3]-ext_ri[1]+1);
+	int ss2 = matrect.size2()/nc; //(ext_ri[2]-ext_ri[0]+1);
+	int np = ss1*ss2;
+
+	matrix<Float> data;
+	reshape_yxf2fp(matrect, nc, data);
+
+	umf_sparse_matrix W;  //affinity matrix
+	array<vector<Float>, 2> loglike; //gmm loglike
+	matrix<Float> X; //gcut solution
+
+	array<vector<bool>, 2> z;
+	z[0] = vector<bool>(np);
+	z[1] = vector<bool>(np);
+
+	std::transform(seg.data().begin(), seg.data().end(), z[0].data().begin(), _1>0);
+	std::transform(seg.data().begin(), seg.data().end(), z[1].data().begin(), _1<=0);
+
+	seg = matrix<int>(ss1, ss2);
+
+	//Initialize background and foreground model
+	real_timer_t timer1;
+
+	int fg_count = std::count(z[0].begin(), z[0].end(), true);
+	int bg_count = np-fg_count;
+
+	boost::array<int, 2> count = {fg_count, bg_count};
+
+	const int NS=opt.NS; //5;//4;//3;
+	for(int mm=0; mm<models.size(); ++mm)
+	{
+	    int stride  = count[mm]/5000*NS;
+	    if(stride<NS) stride = NS;
+	    matrix<Float> datax = columns(data, z[mm]);
+	    do_em_gmm(K[mm], models[mm], datax, stride, it);
+	}
+
+	for(int mm=0; mm<models.size(); ++mm)
+	{
+	    gaussian_mixture_loglike(models[mm], data, loglike[mm]);
+	}
+
+	Float logpf = std::log(Float(fg_count));
+	Float logpb = std::log(Float(bg_count));
+
+	vector<Float> lldiff = loglike[0]-loglike[1];
+	matrix<Float> lr_image(ss1, ss2);
+	std::transform(lldiff.begin(), lldiff.end(), lr_image.data().begin(), _1+logpf-logpb);
+
+
+	//std::cout<<"size = "<<lr_image.size1()<<", "<<lr_image.size2()<<" =="
+	//	 <<smap.size1()<<","<<smap.size2()<<std::endl;
+	matrix<Float> mask = lr_image*opt.beta+smap*opt.gamma;
+	biased_graph_cut(matrect, nc, sig, KN, alpha, mask, W, X);
+
+	real_timer_t timer_cc;
+
+	score_to_segment(X, seg, opt.fgr_l, opt.fgr_u);
+	
+	// too small threshold will result in null segment
+	int ccthr = static_cast<int>(ss1*ss2*opt.min_ccr);
+	remove_small_connected_components(seg, ccthr);
+	
+//----------------
+	spatial_gaussian_from_seg(seg, pos_models);
+	for(int ii=0; ii<2; ++ii)
+	{
+	    pos_models[ii].mean(0) += extbb[0];
+	    pos_models[ii].mean(1) += extbb[1];
+	}
+
+	//std::transform(seg.data().begin(), seg.data().end(), z[0].data().begin(), _1>0);
+	//std::transform(seg.data().begin(), seg.data().end(), z[1].data().begin(), _1<=0);
+	std::cout<<"\ttime: "<<timer.elapsed()<<std::endl;
+//----------------
+    }
+
+
+}
+
+
+template <class Vec, class Mat>
+void split_ped_parts(const vector<boost::array<float, 4> >& model,
+		     const Vec& ped_box, Mat& part_boxes)
+{
+    typedef typename Vec::value_type Float;
+    typedef require_same_type<Float, typename Mat::value_type> 
+	Vec_and_Mat_Must_Have_The_Same_value_type;
+
+    part_boxes = matrix<Float>(3, 4);
+    Float h = ped_box(3)-ped_box(1);
+    Float w = ped_box(2)-ped_box(0);
+
+    for(int bb=0; bb<model.size(); ++bb)
+    {
+	part_boxes(bb, 0) = model(bb)[0]*w+ped_box(0);
+	part_boxes(bb, 2) = model(bb)[2]*w+ped_box(0);
+	part_boxes(bb, 1) = model(bb)[1]*h+ped_box(1);
+	part_boxes(bb, 3) = model(bb)[3]*h+ped_box(1);
+    }
+
+}
+
+template <class Float>
+void bbsegment_image(const matrix<Float>& mat, int nc, 
+		     const vector<array<float, 4> >& shape_model,
+		     const matrix<float>& ped_boxes,
+		     matrix<matrix<int> >& segs,
+		     matrix<array<int, 4> >& parts,
+		     matrix<array<int, 4> >& exts) 
+{
+    int np = ped_boxes.size1();
+    int nb = shape_model.size();
+    segs = matrix<matrix<int> >(np, nb);
+    exts = matrix<array<int, 4> >(np, nb);
+    parts = matrix<array<int, 4> >(np, nb);
+
+
+    int s1 = mat.size1();
+    int s2 = mat.size2()/nc;
+
+    for(int pp=0; pp<np; ++pp)
+    {
+	matrix<Float> part_boxes;
+	split_ped_parts(shape_model, row(ped_boxes, pp), part_boxes);
+	for(int bb=0; bb<part_boxes.size1(); ++bb)
+	{
+	    array<int, 4> ext_ri;
+	    array<int, 4> in_ri;
+
+	    prepare_ext_box<float, int>(row(part_boxes, bb), s1, s2, ext_ri, in_ri);
+
+	    matrix<Float> matrect = extract_rect_image(mat, nc, ext_ri);
+
+	    matrix<float> smap;
+	    prepare_shape_map(ext_ri, in_ri, smap);
+
+	    std::copy(ext_ri.begin(), ext_ri.end(), exts(pp, bb).begin());
+	    std::copy(in_ri.begin(), in_ri.end(), parts(pp, bb).begin());
+
+	    boost::array<gaussian_mixture_t<Float>, 2> models;
+	    bbseg_one(matrect, nc, smap, models, segs(pp, bb));
+
+	}
+    }
+}
+
+template <class Float>
+void bbsegment_image_joint(const matrix<Float>& mat, int nc, 
+			   const vector<array<float, 4> >& shape_model,
+			   const matrix<float>& ped_boxes,
+			   matrix<matrix<int> >& segs,
+			   matrix<matrix<int> >& segs2,
+			   matrix<array<int, 4> >& parts,
+			   matrix<array<int, 4> >& parts2,
+			   matrix<array<int, 4> >& exts,
+			   matrix<array<int, 4> >& exts2) 
+{
+    int np = ped_boxes.size1();
+    int nb = shape_model.size();
+    segs = matrix<matrix<int> >(np, nb);
+    segs2 = matrix<matrix<int> >(np, nb);
+    exts = matrix<array<int, 4> >(np, nb);
+    exts2 = matrix<array<int, 4> >(np, nb);
+    parts = matrix<array<int, 4> >(np, nb);
+    parts2 = matrix<array<int, 4> >(np, nb);
+
+    int s1 = mat.size1();
+    int s2 = mat.size2()/nc;
+
+    for(int pp=0; pp<np; ++pp)
+    {
+	matrix<Float> part_boxes;
+	split_ped_parts(shape_model, row(ped_boxes, pp), part_boxes);
+	for(int bb=0; bb<part_boxes.size1(); ++bb)
+	{
+	    array<int, 4> extbb;
+	    array<int, 4> inbb;
+
+	    prepare_ext_box<Float, int>(row(part_boxes, bb), s1, s2, extbb, inbb);
+
+	    matrix<float> smap;
+	    prepare_shape_map(extbb, inbb, smap);
+
+	    std::copy(extbb.begin(), extbb.end(), exts(pp, bb).begin());
+	    std::copy(inbb.begin(), inbb.end(), parts(pp, bb).begin());
+
+	    matrix<Float> matrect = extract_rect_image(mat, nc, extbb);
+
+	    //bbseg_one as init
+	    array<gaussian_mixture_t<Float>, 2> models;
+	    array<gaussian_t<Float>, 2> pos_models;
+	    bbseg_one(matrect, nc, smap, models, segs(pp, bb));
+	    //bbsegj_one continues to adjust the bounding boxes
+	    segs2(pp, bb) = segs(pp, bb);
+	    bbsegj_one(mat, nc, models, pos_models, inbb, extbb, segs2(pp, bb));
+	    std::copy(extbb.begin(), extbb.end(), exts2(pp, bb).begin());
+	    std::copy(inbb.begin(), inbb.end(), parts(pp, bb).begin());
+	    
+	}
+    }
+}
+
+
+END_NAMESPACE_BBSEG
+
+#endif

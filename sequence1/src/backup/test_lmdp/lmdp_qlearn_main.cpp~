@@ -1,0 +1,188 @@
+#include <iostream>
+#include <algorithm>
+#include <vector>
+#include <numeric>
+#include <limits>
+
+#include <boost/filesystem.hpp>
+#include <boost/format.hpp>
+
+#include <boost/lambda/lambda.hpp>
+#include <boost/lambda/casts.hpp>
+#include <boost/lambda/bind.hpp>
+
+#include <boost/numeric/ublas/matrix.hpp>
+#include <boost/numeric/ublas/assignment.hpp>
+#include <boost/numeric/ublas/lu.hpp>
+
+#include <boost/numeric/bindings/traits/ublas_vector.hpp>
+#include <boost/numeric/bindings/traits/ublas_sparse.hpp>
+#include <boost/numeric/bindings/umfpack/umfpack.hpp>
+
+#include <boost/numeric/ublas/io.hpp>
+
+#include <CImg.h>
+
+#include "statistics.hpp"
+#include "cvpr_array_traits.hpp"
+#include "real_timer.hpp"
+#include "text_file.hpp"
+#include "misc_utils.hpp"
+
+namespace umf=boost::numeric::bindings::umfpack;
+using namespace boost::numeric::ublas;
+using namespace boost;
+using namespace cvpr;
+using namespace cimg_library;
+
+namespace fs = boost::filesystem;
+
+
+typedef cvpr::sparse_matrix_t<double>::type umf_sparse_matrix;
+
+#include "lmdp.hpp"
+#include "lmdp_qlearn.hpp"
+
+struct directory_structure_t
+{
+    directory_structure_t() {
+	prefix = "../test/";
+	output = "../test/output2/";
+	workspace = "../test/workspace/";
+	figures = "../test/figures/";
+    }
+    void make_dir(){
+	if ( !fs::exists( prefix ) )
+	{
+	    fs::create_directory( prefix );
+	}
+	if ( !fs::exists( workspace ) )
+	{
+	    fs::create_directory( workspace );
+	}
+	if ( !fs::exists( output ) )
+	{
+	    fs::create_directory( output );
+	}
+    	if ( !fs::exists( figures ) )
+	{
+	    fs::create_directory( figures );
+	}
+    }
+
+
+    std::string prefix;
+    std::string output;
+    std::string workspace;
+    std::string figures;
+};
+
+
+void draw_training_data(CImg<unsigned char>& vis,
+			training_data_t const& tdata)
+{
+
+    typedef array3d_traits<CImg<unsigned char> > tr;
+    tr::change_size(vis, 3, tdata.obs.size1(), tdata.obs.size2());
+    for(int ii=0; ii<tdata.obs.size1(); ++ii)
+    {
+	for(int jj=0; jj<tdata.obs.size2(); ++jj)
+	{
+	    tr::ref(vis, 0, ii, jj) = 0;
+	    tr::ref(vis, 1, ii, jj) = 0;
+	    tr::ref(vis, 2, ii, jj) = 0;
+	    if(tdata.obs(ii, jj)) tr::ref(vis, 2, ii, jj) = 255;
+	    if(tdata.dyn_obs(ii, jj)) tr::ref(vis, 0, ii, jj) = 255;
+	}
+    }
+    char ccol[3] = {255, 255, 255};
+
+    for(int kk=0; kk+1<tdata.path.size2(); ++kk)
+    {
+	vis.draw_line(tdata.path(1, kk), tdata.path(0, kk),
+		      tdata.path(1, kk+1), tdata.path(0, kk+1), ccol);
+    }
+
+}
+
+
+
+int xmain(int argc, char* argv[])
+{
+    matrix<double> m(3,3);
+    m <<=0.8147,    0.9134,    0.2785,
+	0.9058,    0.6324,    0.5469,
+	0.1270,    0.0975,    0.9575;
+    vector<double> v;
+    double l = eigs(m, v);
+
+    std::cout<<l<<std::endl;
+    std::cout<<v<<std::endl;
+
+    return 0;
+}
+
+int main(int argc, char* argv[])
+{
+    using namespace boost::lambda;
+    directory_structure_t ds;
+    ds.make_dir();
+    //array<int, 2> goal;
+    training_data_t tdata;
+
+    tdata.load(ds.prefix+"training_data2.xml");
+    matrix<int>& obs = tdata.obs;
+    matrix<int>& dyn_obs = tdata.dyn_obs;
+    matrix<int>& path = tdata.path;
+
+    CImg<unsigned char> vis_map;
+    draw_training_data(vis_map, tdata);
+    {
+	std::string name = ds.figures+"vis_map.png";
+	vis_map.save_png(name.c_str());
+    }
+
+    vector<matrix<float> > feat;
+    generate_feature_maps(obs, dyn_obs, feat);
+
+    for(int ii=0; ii<feat.size(); ++ii)
+    {
+	CImg<unsigned char> vis_feat;
+	double maxf = *(std::max_element(feat(ii).data().begin(), feat(ii).data().end()));
+	array2d_transform(feat(ii), vis_feat, ll_static_cast<unsigned char>(_1*254/maxf));
+	std::string name = ds.figures+str(format("vis_feat%03d.png")%ii);
+	vis_feat.save_png(name.c_str());
+    }
+
+    vector<vector<int> > sg; //(num_states, num_neighbors)
+    matrix<vector<double> > fg; //(num_features, num_states, num_neighbors)
+    vector<vector<double> > log_pps; //(num_states, num_neighbors)
+    matrix<int> yx2ig;
+    matrix<int> ig2yx;
+
+    get_state_graph(obs, dyn_obs, sg, yx2ig, ig2yx);
+    //std::cout<<sg<<std::endl;
+
+    get_feature_graph(obs, dyn_obs, feat, sg, ig2yx, fg);
+
+    //array2d_print(std::cout, pps);
+
+    vector<vector<int> > path_ig(1);
+    get_path_ig(path, yx2ig, path_ig(0));
+
+    vector<double> wei(feat.size()+1);
+    wei <<= 0.33, 0.33, 0.33, 0.5;
+
+    wei *= 40;
+    vector<double> q;
+    lmdp_t lmdp;
+    lmdp.initialize(fg, sg, yx2ig, ig2yx);
+
+    //learn_weights(lmdp, path_ig, wei);
+    unit_test(lmdp, path_ig, wei);
+    //learn_weights_numeric(lmdp, path_ig, wei);
+    return 0;
+}
+
+
+#include "lmdp_details.hpp"

@@ -1,0 +1,100 @@
+#include <boost/mpi.hpp>
+#include "tracking_data_package.hpp"
+#include "tracking_detail.hpp"
+#include "planning.hpp"
+
+#include "munkres.hpp"
+
+#include <iostream>
+
+#include "text_file.hpp"
+
+#include "misc_utils.hpp"
+
+#include "real_timer.hpp"
+
+#include <boost/numeric/ublas/matrix_proxy.hpp>
+
+using namespace boost::numeric::ublas;
+using namespace cvpr;
+
+int main(int argc, char *argv[]) 
+{
+    directory_structure_t ds;
+
+    matrix<float> gt;
+    
+    read_text_array2d(ds.workspace+"gt.txt", gt);
+
+    {
+	matrix<float> results_plan;
+	read_text_array2d(ds.workspace+"results_plan.txt", results_plan);
+
+	matrix<CImg<unsigned char> > patches_gt;
+	matrix<CImg<unsigned char> > patches_rst;
+	vis_perf_eval(results_plan, gt, corres, patches_gt, patches_rst,
+		      "gt2rst_pl%05d.png", "rst2gt_pl%05d.png");
+
+    }
+    {
+	matrix<float> results_app;
+	read_text_array2d(ds.workspace+"results_app.txt", results_app);
+	std::cout<<"Evaluating the performance of appearance:"<<std::endl;
+	vector<std::vector<std::pair<int, int> > > corres;
+	perf_eval(results_app, gt, corres, perf_app);
+	matrix<CImg<unsigned char> > patches_gt;
+	matrix<CImg<unsigned char> > patches_rst;
+	vis_perf_eval(results_app, gt, corres,  patches_gt, patches_rst,
+		      "gt2rst_ap%05d.png", "rst2gt_ap%05d.png");
+
+    }
+}
+
+
+void vis_pair(matrix<CImg<unsigned char> >const& patches_gt,
+	      matrix<CImg<unsigned char> >const& patches_rst1,
+	      matrix<CImg<unsigned char> >const& patches_rst2,
+	      int ngt, int nrst1, int nrst2,
+	      std::string const& name)
+{
+    typedef array3d_traits<CImg<unsigned char> > A;
+
+    CImg<unsigned char> gt2rst_tile;
+
+    int ww = 60;
+    int hh = 150;
+
+    int T0 = 0;
+    for(int tt=0; tt<patches_gt.size1(); ++tt)
+    {
+	if(A::size1(patches_gt(0, tt)) >0 ||
+	   A::size1(patches_rst1(0, tt)) >0 ||
+	   A::size1(patches_rst2(0, tt)) >0 )
+	{
+	    T0 = tt;
+	    break;
+	}
+    }
+    int T1 = 0;
+    for(int tt=patches_gt.size1()-1; tt>=0; --tt)
+    {
+	if(A::size1(patches_gt(0, tt)) >0 ||
+	   A::size1(patches_rst1(0, tt)) >0 ||
+	   A::size1(patches_rst2(0, tt)) >0 )
+	{
+	    T1 = tt+1;
+	    break;
+	}
+    }
+
+    A::change_size(gt2rst_tile, 3, 3*hh, (T1-T0)*ww);
+    array3d_fill(gt2rst_tile, 0);
+    for(int tt=T0; tt<T1; ++tt)
+    {
+	add_patch_to_tile(gt2rst_tile, patches_gt(0, tt), 0, tt-T0);
+	add_patch_to_tile(gt2rst_tile, patches_rst1(0, tt), 1, tt-T0);
+	add_patch_to_tile(gt2rst_tile, patches_rst2(0, tt), 2, tt-T0);
+    }
+
+    gt2rst_tile.save_png(name.c_str());
+}

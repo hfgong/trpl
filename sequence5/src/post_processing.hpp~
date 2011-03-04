@@ -1,0 +1,6 @@
+void post_process_trj(vector<object_trj_t> const& trlet_list,
+		      vector<object_trj_t>& final_trj_list,
+		      vector<vector<int> >& final_trj_index,
+		      matrix<int>& final_state_list,
+		      int Ncam, 
+		      int len_thr)

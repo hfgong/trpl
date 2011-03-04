@@ -1,0 +1,32 @@
+#include <iostream>
+#include <algorithm>
+#include <numeric>
+#include <limits>
+
+#include <boost/lambda/lambda.hpp>
+#include <boost/lambda/casts.hpp>
+#include <boost/lambda/bind.hpp>
+
+#include <boost/numeric/ublas/matrix.hpp>
+#include <boost/numeric/bindings/traits/ublas_vector.hpp>
+#include <boost/numeric/bindings/traits/ublas_sparse.hpp>
+#include <boost/numeric/bindings/umfpack/umfpack.hpp>
+
+#include <boost/numeric/ublas/io.hpp>
+
+
+#include "statistics.hpp"
+#include "cvpr_array_traits.hpp"
+#include "real_timer.hpp"
+
+namespace umf=boost::numeric::bindings::umfpack;
+using namespace boost::numeric::ublas;
+using namespace cvpr;
+
+typedef cvpr::sparse_matrix_t<double>::type umf_sparse_matrix;
+
+
+int main(int argc, char* argv[])
+{
+    return 0;
+}

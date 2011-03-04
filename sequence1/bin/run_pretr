@@ -1,0 +1,5 @@
+echo "running ----------------------Pre-Tracking--------------------------------"
+
+#../openmpi-1.4.2/build/bin/mpirun  -np 12 --x LD_LIBRARY_PATH=../openmpi-1.4.2/build/lib ./pretr
+mpirun  -np 12  ./pretr
+

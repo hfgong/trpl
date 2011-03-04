@@ -1,0 +1,88 @@
+
+#include "tracking_data_package.hpp"
+#include "tracking_detail.hpp"
+
+#include "segment_parts.hpp"
+
+#include "filter_trlet.hpp"
+
+float seg_thresh = 0.4f;
+int min_trlet_len = 1;
+int t_thresh = 20;
+float v_thresh = 50;
+
+void load_raw_trlet_list( directory_structure_t & ds, vector<object_trj_t>& trlet_list)
+{
+
+    {
+	std::string name = ds.workspace+"raw_trlet_list.xml";
+	std::ifstream fin(name.c_str());
+	boost::archive::xml_iarchive ia(fin);
+	ia >> BOOST_SERIALIZATION_NVP(trlet_list);
+    }
+
+
+}
+
+int main(int argc, char* argv[])
+{
+
+    using namespace boost::lambda;
+
+    directory_structure_t ds;
+
+    vector<matrix<matrix<unsigned char> > >  seg_list;
+    {
+	std::string name = ds.workspace+"seg_list.txt";
+	if(!fs::exists(name)) std::cout<<"warning: seg_list file not found!"<<std::endl;
+	load_seg_list(name, seg_list);
+    }
+
+
+    vector<object_trj_t> trlet_list;
+    load_raw_trlet_list(ds, trlet_list);
+
+    vector<float> seg_score ;
+
+    compute_seg_score(trlet_list, seg_list, seg_score);
+
+    vector<bool> good_trlet_flag;
+    vector<int> good_trlet_index;
+    vector<object_trj_t> good_trlet_list;
+    filter_trlet(trlet_list, seg_score, min_trlet_len, seg_thresh,
+		 good_trlet_list, good_trlet_flag, good_trlet_index);
+    {
+	std::string name = ds.workspace+"good_trlet_flag.txt";
+	std::ofstream fout(name.c_str());
+	fout<<good_trlet_flag;
+	fout.close();
+    }
+    {
+	std::string name = ds.workspace+"good_trlet_index.txt";
+	std::ofstream fout(name.c_str());
+	fout<<good_trlet_index;
+	fout.close();
+    }
+    {
+	std::string name = ds.workspace+"good_trlet_list.xml";
+	std::ofstream fout(name.c_str());
+	boost::archive::xml_oarchive oa(fout);
+	oa << BOOST_SERIALIZATION_NVP(good_trlet_list);
+    }
+
+    matrix<int> Tff;
+    prepare_valid_linkset(good_trlet_list, t_thresh, v_thresh, Tff);
+    {
+	std::string name = ds.workspace+"Tff.txt";
+	std::ofstream fout(name.c_str());
+	fout<<Tff;
+	fout.close();
+    }
+
+
+    return 0;
+}
+
+
+#include "filter_trlet_impl.hpp"
+#include "segment_parts_impl.hpp"
