@@ -1,5 +1,0 @@
-echo "running ----------------------LINPROG_PLAN--------------------------------"
-
-../openmpi-1.4.2/build/bin/mpirun  -np 7 ./linprog_plan
-
-
