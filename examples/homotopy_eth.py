@@ -90,6 +90,11 @@ def main():
 
     obs, obs_cent = combine_obstacles(-1, [], ped_obs, poly_ground)
     obs_map, dyn_map = construct_obstacle_maps(obs, poly_ground, goal_ground)
+    # Treat pedestrians as HARD obstacles for this demo: carve their cells out
+    # of the walkable graph so paths genuinely go *around* them (not merely pay
+    # the soft dynamic-obstacle cost). Remove this line to get the tracker's
+    # soft-obstacle behaviour instead.
+    obs_map = np.where(dyn_map > 0, 1, obs_map)
     feat = construct_feature_maps(obs_map, dyn_map)
     ig2yx, yx2ig, src, dst, nbr = build_state_graph(obs_map)
     ew = edge_weights(ig2yx, src, dst, nbr, feat, WEI)
