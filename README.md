@@ -61,6 +61,17 @@ yellow = observed box, cyan = planned/gap box, with ids and trails),
 `ground_###.png` (top-down views), `results.txt` (boxes per object/frame).
 Pre-tracking results are cached in `<sequence>/workspace/py_cache/`.
 
+## Tests
+
+Unit tests (stdlib `unittest`, no dataset or extra dependency required) cover
+the deterministic core — I/O parsers, geometry/homography, features &
+histograms, the linking LP, gating & affinity, tracklet (de)serialization,
+trajectory finalization, and planning helpers. Run from the repo root:
+
+```bash
+python -m unittest discover -s tests
+```
+
 ## Faithfulness & deviations
 
 The port reproduces the original algorithms and constants (histogram model,
