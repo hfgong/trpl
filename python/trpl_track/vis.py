@@ -83,70 +83,110 @@ PED_OBS_COLOR = (90, 90, 110)   # pedestrian obstacle footprints
 PLAN_COLOR = (0, 230, 255)      # selected motion plan bridging a gap
 
 
+def _ground_crop_box(final_list, state_list, gl, margin=30):
+    """Bounding box (in ground coords) around all tracked positions.
+
+    Cropping to where objects actually are matches the paper's Fig. 5 (a
+    cropped top-view) and keeps the mostly-empty street and far-goal plan
+    extensions out of frame.
+    """
+    pts = []
+    for k, f in enumerate(final_list):
+        for tt in range(f.startt, f.endt + 1):
+            if state_list[k, tt] >= 0:
+                pts.append((f.trj_3d[tt, 0], f.trj_3d[tt, 1]))
+    if not pts:
+        return 0, 0, gl.xmax, gl.ymax
+    pts = np.array(pts)
+    x0 = max(gl.xmin, int(pts[:, 0].min() - margin))
+    x1 = min(gl.xmax, int(pts[:, 0].max() + margin))
+    y0 = max(gl.ymin, int(pts[:, 1].min() - margin))
+    y1 = min(gl.ymax, int(pts[:, 1].max() + margin))
+    return x0, y0, max(x1, x0 + 1), max(y1, y0 + 1)
+
+
 def vis_ground_frames(ds, gi, final_list, state_list, trj_index=None,
-                      gap_paths=None, car_obs=None, ped_obs=None, cam=0):
+                      gap_paths=None, car_obs=None, ped_obs=None, cam=0,
+                      crop=True, draw_full_plans=False):
     """Write per-frame top-down ground-plane views to ``ds.output``.
 
     Draws the walkable polygon, goals, **car obstacles** (per frame),
-    optionally pedestrian obstacle footprints, each trajectory's ground track
-    and current position, and the **selected motion plan** used to bridge each
-    linked gap (the paper's Fig. 5 bottom view).
+    optionally pedestrian obstacle footprints, and each trajectory's ground
+    track.  The track is coloured by provenance: **observed** segments in the
+    object's colour, **planned/gap** segments in cyan -- so the planned bridge
+    is visible inline without a separate goal-ward line.  The view is
+    **cropped** to the region occupied by the tracked objects (paper Fig. 5).
+
+    ``draw_full_plans=True`` additionally overlays the full selected plan-to-goal
+    curves (paper-style, but busier); off by default since those long curves ran
+    off toward far goals and dominated the view.
     """
     ds.make_dirs()
     gl = gi.ground_lim
-    W, H = gl.xmax, gl.ymax
     T = final_list[0].trj_3d.shape[0] if final_list else 0
     poly = gi.poly_ground
     goals = gi.goal_ground
 
-    def _poly_pts(arr_2xn):
-        return [(float(arr_2xn[0, i]), float(arr_2xn[1, i]))
+    if crop and final_list:
+        cx0, cy0, cx1, cy1 = _ground_crop_box(final_list, state_list, gl)
+    else:
+        cx0, cy0, cx1, cy1 = 0, 0, gl.xmax, gl.ymax
+    W, H = cx1 - cx0, cy1 - cy0
+
+    def P(arr_2xn):     # 2xN ground -> list of crop-local (x,y)
+        return [(float(arr_2xn[0, i]) - cx0, float(arr_2xn[1, i]) - cy0)
                 for i in range(arr_2xn.shape[1])]
+
+    def Pxy(pairs):     # iterable of (x,y) ground -> crop-local
+        return [(float(x) - cx0, float(y) - cy0) for x, y in pairs]
 
     out_paths = []
     for tt in range(T):
         canvas = Image.new("RGB", (W, H), (30, 30, 40))
         draw = ImageDraw.Draw(canvas)
-        draw.polygon(_poly_pts(poly), outline=(120, 120, 160))
+        draw.polygon(P(poly), outline=(120, 120, 160))
         for g in range(goals.shape[1]):
-            gx, gy = float(goals[0, g]), float(goals[1, g])
+            gx, gy = float(goals[0, g]) - cx0, float(goals[1, g]) - cy0
             draw.rectangle([gx - 6, gy - 6, gx + 6, gy + 6], outline=(150, 150, 150))
 
-        # Pedestrian obstacle footprints at this frame (optional).
         if ped_obs is not None:
             for nn in range(len(ped_obs)):
                 p = ped_obs[nn][tt] if tt < len(ped_obs[nn]) else None
                 if p is not None and len(p) > 0:
-                    draw.polygon([(float(x), float(y)) for x, y in p],
-                                 outline=PED_OBS_COLOR)
+                    draw.polygon(Pxy(p), outline=PED_OBS_COLOR)
 
-        # Car obstacles at this frame (filled quads).
         if car_obs is not None and tt < len(car_obs):
             for poly4 in car_obs[tt]:
                 if poly4 is not None and len(poly4) > 0:
-                    draw.polygon([(float(x), float(y)) for x, y in poly4],
-                                 fill=CAR_COLOR, outline=(255, 200, 120))
+                    draw.polygon(Pxy(poly4), fill=CAR_COLOR, outline=(255, 200, 120))
 
-        # Selected motion plans bridging linked gaps (drawn during the gap span).
-        if trj_index is not None and gap_paths is not None:
+        # Optional: full selected plan-to-goal curves (paper-style, busier).
+        if draw_full_plans and trj_index is not None and gap_paths is not None:
             for k, chain in enumerate(trj_index):
-                if state_list[k, tt] != 0:       # only while in a planned gap
+                if state_list[k, tt] != 0:
                     continue
                 for a, b in zip(chain[:-1], chain[1:]):
                     gp = gap_paths[a][b]
                     if gp is not None and len(gp) > 1:
-                        draw.line([(float(x), float(y)) for x, y in gp],
-                                  fill=PLAN_COLOR, width=2)
+                        draw.line(Pxy(gp), fill=PLAN_COLOR, width=1)
 
+        # Trajectory track, coloured by provenance (observed vs planned gap).
         for k, f in enumerate(final_list):
-            trail = [(f.trj_3d[s, 0], f.trj_3d[s, 1])
-                     for s in range(f.startt, tt + 1) if state_list[k, s] >= 0]
-            if len(trail) > 1:
-                draw.line(trail, fill=_ID_COLORS[k % len(_ID_COLORS)], width=2)
+            col = _ID_COLORS[k % len(_ID_COLORS)]
+            prev, prev_s = None, None
+            for s in range(f.startt, tt + 1):
+                if state_list[k, s] < 0:
+                    prev = None
+                    continue
+                cur = (f.trj_3d[s, 0] - cx0, f.trj_3d[s, 1] - cy0)
+                if prev is not None:
+                    planned = state_list[k, s] == 0 or state_list[k, prev_s] == 0
+                    draw.line([prev, cur], fill=PLAN_COLOR if planned else col,
+                              width=3 if planned else 2)
+                prev, prev_s = cur, s
             if state_list[k, tt] >= 0:
-                x, y = f.trj_3d[tt, 0], f.trj_3d[tt, 1]
-                draw.ellipse([x - 5, y - 5, x + 5, y + 5],
-                             fill=_ID_COLORS[k % len(_ID_COLORS)])
+                x, y = f.trj_3d[tt, 0] - cx0, f.trj_3d[tt, 1] - cy0
+                draw.ellipse([x - 5, y - 5, x + 5, y + 5], fill=col)
 
         canvas = canvas.transpose(Image.FLIP_TOP_BOTTOM)   # mirror('y')
         name = ds.output / f"ground_{tt:03d}.png"
