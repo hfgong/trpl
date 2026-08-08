@@ -107,19 +107,21 @@ def _ground_crop_box(final_list, state_list, gl, margin=30):
 
 def vis_ground_frames(ds, gi, final_list, state_list, trj_index=None,
                       gap_paths=None, car_obs=None, ped_obs=None, cam=0,
-                      crop=True, draw_full_plans=False):
+                      crop=False, draw_full_plans=False):
     """Write per-frame top-down ground-plane views to ``ds.output``.
 
     Draws the walkable polygon, goals, **car obstacles** (per frame),
     optionally pedestrian obstacle footprints, and each trajectory's ground
     track.  The track is coloured by provenance: **observed** segments in the
     object's colour, **planned/gap** segments in cyan -- so the planned bridge
-    is visible inline without a separate goal-ward line.  The view is
-    **cropped** to the region occupied by the tracked objects (paper Fig. 5).
+    is visible inline without a separate goal-ward line.
+
+    The full ground extent is shown by default (nothing hidden -- better for
+    debugging).  Pass ``crop=True`` to crop to the region occupied by the
+    tracked objects (paper Fig. 5 is a cropped top-view).
 
     ``draw_full_plans=True`` additionally overlays the full selected plan-to-goal
-    curves (paper-style, but busier); off by default since those long curves ran
-    off toward far goals and dominated the view.
+    curves (paper-style, but busier -- long curves run off toward far goals).
     """
     ds.make_dirs()
     gl = gi.ground_lim

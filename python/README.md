@@ -24,7 +24,7 @@ pretr → filter → appearance affinity → motion-planning LP → finalize →
 | plan affinity | `linprog_plan.py` | Match plans to tracklet ends, synthesize interpolated gap tracklets, score them by appearance → planning affinity `Plff`. |
 | linking LP | `lp.py` | Max-weight bipartite matching `max (Aff + 0.5·Plff)·x` (GLPK → `scipy.optimize.linprog`). |
 | finalize | `finalize.py` | Walk the link graph into full trajectories; fill gaps with planned boxes. |
-| visualize | `vis.py` | Per-frame image overlays (boxes/ids/trails) + top-down ground-plane views (walkable polygon, goals, **car obstacles** as orange quads, pedestrian footprints, **selected motion plans** in cyan, and trajectory tracks) — the paper's Fig. 5 bottom. |
+| visualize | `vis.py` | Per-frame image overlays (boxes/ids/trails) + top-down ground-plane views (full extent by default, `crop=True` for a paper-Fig.-5 crop): walkable polygon, goals, **car obstacles** as orange quads, pedestrian footprints, and trajectory tracks coloured by provenance (observed vs **planned/gap** in cyan). |
 
 ## Dependency mapping (C++ → Python)
 
