@@ -39,16 +39,18 @@ pretr → filter → appearance affinity → motion-planning LP → finalize →
 
 ## Install & run
 
+Run from the repository root (the `trpl_track` package lives at top level):
+
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -e .            # or: pip install numpy scipy pillow
 
 # Full sequence (writes overlays to <sequence>/output_py/):
-python -m trpl_track.run --sequence ../sequence1
-python -m trpl_track.run --sequence ../sequence5
+python -m trpl_track.run --sequence sequence1
+python -m trpl_track.run --sequence sequence5
 
 # Quick smoke test on the first N frames:
-python -m trpl_track.run --sequence ../sequence1 --max-frames 15
+python -m trpl_track.run --sequence sequence1 --max-frames 15
 ```
 
 Options: `--max-frames N`, `--plan-grid-step K` (ground-grid downsample for the

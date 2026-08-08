@@ -1,12 +1,11 @@
 # Python
-python/.venv/
+.venv/
 **/__pycache__/
 *.pyc
 *.egg-info/
 
 # Generated per-sequence outputs / caches
 sequence*/output_py/
-sequence*/figures_py/
 sequence*/workspace/py_cache/
 
 # Editor backups

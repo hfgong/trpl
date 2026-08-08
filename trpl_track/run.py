@@ -2,8 +2,8 @@
 
 Usage::
 
-    python -m trpl_track.run --sequence ../sequence1
-    python -m trpl_track.run --sequence ../sequence1 --max-frames 20 --plan-grid-step 4
+    python -m trpl_track.run --sequence sequence1
+    python -m trpl_track.run --sequence sequence1 --max-frames 20 --plan-grid-step 4
 
 Intermediate results are cached in ``<workspace>/py_cache`` so re-runs skip the
 slow pre-tracking stage.
@@ -28,7 +28,7 @@ from .tracklet import save_tracklets, load_tracklets
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description="trpl_track pipeline")
-    ap.add_argument("--sequence", default="../sequence1",
+    ap.add_argument("--sequence", default="sequence1",
                     help="path to a sequence root (sequence1 / sequence5)")
     ap.add_argument("--max-frames", type=int, default=None,
                     help="limit number of frames (for quick tests)")

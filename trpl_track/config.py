@@ -24,19 +24,15 @@ class DirectoryStructure:
     images: Path = field(init=False)
     workspace: Path = field(init=False)
     output: Path = field(init=False)
-    figures: Path = field(init=False)
 
     def __init__(self, root: str | Path):
         self.root = Path(root).resolve()
         self.images = self.root / "images"
         self.workspace = self.root / "workspace"
-        # Do not clobber the C++ output dir; use *_py variants.
         self.output = self.root / "output_py"
-        self.figures = self.root / "figures_py"
 
     def make_dirs(self) -> None:
         self.output.mkdir(parents=True, exist_ok=True)
-        self.figures.mkdir(parents=True, exist_ok=True)
 
     # Files required to run the pipeline (relative to their dirs).
     _REQUIRED_IMAGES = ("image_list_l.txt", "image_list_r.txt")
