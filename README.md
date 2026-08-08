@@ -61,6 +61,26 @@ yellow = observed box, cyan = planned/gap box, with ids and trails),
 `ground_###.png` (top-down views), `results.txt` (boxes per object/frame).
 Pre-tracking results are cached in `<sequence>/workspace/py_cache/`.
 
+## Example: winding-number homotopy planning on ETH
+
+`examples/homotopy_eth.py` runs *only* the paper's winding-number planner
+(`trpl_track.planning`) on the ETH pedestrian scene — the Python counterpart of
+the original standalone `homotopy_eth_main.cpp`. Pedestrians at one moment become
+ground-plane obstacles, and it enumerates the distinct **homotopy classes** of
+shortest paths across the crowd (go left/right of each critical obstacle),
+labelled by their winding numbers — as in Figures 2–3 of the paper.
+
+```bash
+bash examples/fetch_eth_data.sh     # download ETH data (not committed)
+python examples/homotopy_eth.py     # -> examples/results/homotopy_eth.png
+```
+
+![homotopy-eth](examples/results/homotopy_eth.png)
+
+The ETH dataset (Pellegrini et al., ICCV 2009) is **not redistributed here**;
+`fetch_eth_data.sh` pulls it from the [OpenTraj](https://github.com/crowdbotp/OpenTraj)
+mirror into a git-ignored `data/`.
+
 ## Tests
 
 Unit tests (stdlib `unittest`, no dataset or extra dependency required) cover

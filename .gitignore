@@ -11,3 +11,6 @@ sequence*/workspace/py_cache/
 # Editor backups
 *~
 *.orig
+
+# External datasets (fetch with examples/fetch_eth_data.sh)
+data/
