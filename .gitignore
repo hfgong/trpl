@@ -1,0 +1,17 @@
+# Python
+python/.venv/
+**/__pycache__/
+*.pyc
+*.egg-info/
+
+# Generated per-sequence outputs / caches
+sequence*/output_py/
+sequence*/figures_py/
+sequence*/workspace/py_cache/
+
+# Editor backups
+*~
+*.orig
+
+# Reference paper (copyrighted; kept local, not published)
+ICCV-2011-Tracking-Planning.pdf

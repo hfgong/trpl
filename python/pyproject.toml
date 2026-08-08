@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "trpl_track"
+version = "0.1.0"
+description = "NumPy/SciPy port of the ICCV 2011 multi-hypothesis motion-planning tracker (Gong, Sim, Shi)"
+requires-python = ">=3.9"
+dependencies = [
+    "numpy>=1.23",
+    "scipy>=1.9",
+    "pillow>=9.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["trpl_track*"]
