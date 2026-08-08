@@ -11,6 +11,3 @@ sequence*/workspace/py_cache/
 # Editor backups
 *~
 *.orig
-
-# Reference paper (copyrighted; kept local, not published)
-ICCV-2011-Tracking-Planning.pdf
